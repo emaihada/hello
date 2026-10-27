@@ -1,0 +1,45 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'IBM Plex Sans KR', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-serif: 'IBM Plex Sans KR', 'Gowun Batang', sans-serif;
+  --font-mono: 'IBM Plex Sans KR', 'JetBrains Mono', monospace;
+}
+
+body, h1, h2, h3, .font-serif, .font-mono {
+  font-family: 'IBM Plex Sans KR', -apple-system, BlinkMacSystemFont, sans-serif !important;
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-mono, .tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Crosshair dashed background for Korean manuscript (원고지) cells (#12) */
+.hanji-crosshair-light {
+  background-image:
+    linear-gradient(to right, rgba(168, 144, 116, 0.38) 50%, transparent 50%),
+    linear-gradient(to bottom, rgba(168, 144, 116, 0.38) 50%, transparent 50%);
+  background-size: 8px 1px, 1px 8px;
+  background-repeat: repeat-x, repeat-y;
+  background-position: center center;
+}
+
+.hanji-crosshair-dark {
+  background-image:
+    linear-gradient(to right, rgba(214, 199, 178, 0.24) 50%, transparent 50%),
+    linear-gradient(to bottom, rgba(214, 199, 178, 0.24) 50%, transparent 50%);
+  background-size: 8px 1px, 1px 8px;
+  background-repeat: repeat-x, repeat-y;
+  background-position: center center;
+}
+
+@keyframes autoCommitProgress {
+  from {
+    width: 0%;
+  }
+  to {
+    width: 100%;
+  }
+}
+
