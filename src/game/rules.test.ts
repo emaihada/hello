@@ -235,4 +235,22 @@ test('handwriting recognition is robust against reversed stroke order and cursiv
   }
 });
 
+test('stage generator deprioritizes words used in previously created stages', () => {
+  // Collect all words from the first generated stage for seed 9
+  const initialStageWords = generateCrosswordWordDataList(9, 15, 20);
+  const usedSet = new Set(initialStageWords.map((w) => w.word));
+
+  // Generate again with the same seed (9), gridSize (15), and targetWords (20), passing usedSet
+  const nextStageWords = generateCrosswordWordDataList(9, 15, 20, usedSet);
+  assert.ok(nextStageWords.length >= 15, 'Should still generate a full crossword stage');
+
+  const repeatedCount = nextStageWords.filter((w) => usedSet.has(w.word)).length;
+  assert.equal(
+    repeatedCount,
+    0,
+    `Expected 0 repeated words when dictionary has plenty of unused words, but got ${repeatedCount}`
+  );
+});
+
+
 

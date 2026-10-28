@@ -189,14 +189,18 @@ export class CrosswordStageGenerator {
   /**
    * Generates a deterministic crossword board for the given stageNumber.
    * Returns List<CrosswordWordData> with intersecting words.
+   * Deprioritizes words in previouslyUsedWords so earlier stages' words are avoided whenever possible.
    */
   public generateStage(
     stageNumber: number,
     customGridSize: number = GRID_SIZE,
-    customTargetWords?: number
+    customTargetWords?: number,
+    previouslyUsedWords?: Iterable<string>
   ): CrosswordWordData[] {
     const safeStage = Math.max(1, Math.floor(stageNumber));
     const gridSize = Math.max(8, Math.min(25, Math.floor(customGridSize || GRID_SIZE)));
+    const excludedSet = new Set<string>(previouslyUsedWords ?? []);
+
     // Deterministically target word count if not explicitly provided
     const targetCount =
       customTargetWords !== undefined
@@ -206,24 +210,30 @@ export class CrosswordStageGenerator {
     const minTargetAccept = Math.min(targetCount, 12);
 
     let bestResult: CrosswordWordData[] = [];
-    let bestCrossings = -1;
+    let bestScore = -Infinity;
 
     // Try up to 6 deterministic sub-passes from the stage seed to ensure words
     for (let attempt = 0; attempt < 6; attempt++) {
       this.random.InitState(safeStage * 10007 + attempt * 7919);
-      const runResult = this.tryBuildGrid(targetCount, gridSize);
-      if (
-        runResult.words.length >= minTargetAccept &&
-        runResult.totalIntersections > bestCrossings
-      ) {
+      const runResult = this.tryBuildGrid(targetCount, gridSize, excludedSet);
+      const reusedCount = runResult.words.reduce(
+        (acc, w) => acc + (excludedSet.has(w.word) ? 1 : 0),
+        0
+      );
+      const runScore =
+        runResult.words.length * 100 +
+        runResult.totalIntersections * 10 -
+        reusedCount * 500;
+
+      if (runResult.words.length >= minTargetAccept && runScore > bestScore) {
         bestResult = runResult.words;
-        bestCrossings = runResult.totalIntersections;
-        if (runResult.words.length >= targetCount) {
+        bestScore = runScore;
+        if (runResult.words.length >= targetCount && reusedCount === 0) {
           break;
         }
-      } else if (runResult.words.length > bestResult.length) {
+      } else if (bestResult.length < minTargetAccept && runResult.words.length > bestResult.length) {
         bestResult = runResult.words;
-        bestCrossings = runResult.totalIntersections;
+        bestScore = runScore;
       }
     }
 
@@ -232,7 +242,8 @@ export class CrosswordStageGenerator {
 
   private tryBuildGrid(
     targetCount: number,
-    size: number = GRID_SIZE
+    size: number = GRID_SIZE,
+    previouslyUsedSet: Set<string> = new Set()
   ): {
     words: CrosswordWordData[];
     totalIntersections: number;
@@ -342,11 +353,24 @@ export class CrosswordStageGenerator {
       return intersections;
     };
 
-    // 1. Pick high-connectivity seed words (3..4 chars) and place the first word near the center
+    // 1. Pick high-connectivity seed words (3..4 chars) not used in previous stages and place the first word near the center
     const seedCandidates = this.validWords.filter(
       (w) => w.chars.length >= 3 && w.chars.length <= 4 && w.connectivityScore >= 6
     );
-    const seedPool = seedCandidates.length > 0 ? seedCandidates : this.validWords;
+    const freshSeedCandidates = seedCandidates.filter(
+      (w) => !previouslyUsedSet.has(w.entry.word)
+    );
+    const freshAllWords = this.validWords.filter(
+      (w) => !previouslyUsedSet.has(w.entry.word)
+    );
+    const seedPool =
+      freshSeedCandidates.length > 0
+        ? freshSeedCandidates
+        : freshAllWords.length > 0
+        ? freshAllWords
+        : seedCandidates.length > 0
+        ? seedCandidates
+        : this.validWords;
     const firstWordObj = seedPool[this.random.Range(0, seedPool.length)];
     if (!firstWordObj) {
       return { words: [], totalIntersections: 0 };
@@ -393,10 +417,21 @@ export class CrosswordStageGenerator {
           const matchingEntries = this.charIndex.get(anchorChar);
           if (!matchingEntries || matchingEntries.length === 0) continue;
 
-          const indices = Array.from({ length: matchingEntries.length }, (_, k) => k);
-          this.random.shuffleInPlace(indices);
+          // Partition candidates so fresh (never used in previous stages) words are evaluated first
+          const freshIndices: number[] = [];
+          const reusedIndices: number[] = [];
+          for (let k = 0; k < matchingEntries.length; k++) {
+            if (!previouslyUsedSet.has(matchingEntries[k].word)) {
+              freshIndices.push(k);
+            } else {
+              reusedIndices.push(k);
+            }
+          }
+          this.random.shuffleInPlace(freshIndices);
+          this.random.shuffleInPlace(reusedIndices);
+          const indices = [...freshIndices, ...reusedIndices];
 
-          const maxChecks = Math.min(indices.length, 32);
+          const maxChecks = Math.min(indices.length, 36);
           for (let m = 0; m < maxChecks; m++) {
             const candidate = matchingEntries[indices[m]];
             if (usedWords.has(candidate.word)) continue;
@@ -411,15 +446,18 @@ export class CrosswordStageGenerator {
 
               const intersections = canPlaceWord(candChars, candX, candY, perpDir, true);
               if (intersections > 0) {
-                // Score candidate: reward multi-intersections, compact 2..3 char words when board fills up, and balanced position
+                // Score candidate: reward multi-intersections, compact 2..3 char words when board fills up,
+                // and strongly penalize words already used in previous stages.
                 const centerDist =
                   Math.abs(candX + (perpDir === 'Horizontal' ? candChars.length / 2 : 0) - 7) +
                   Math.abs(candY + (perpDir === 'Vertical' ? candChars.length / 2 : 0) - 7);
                 const lengthBonus = candChars.length <= 3 ? 12 : candChars.length === 4 ? 6 : 0;
+                const reusePenalty = previouslyUsedSet.has(candidate.word) ? 1000 : 0;
                 const score =
                   intersections * 50 +
                   lengthBonus -
-                  centerDist * 0.8 +
+                  centerDist * 0.8 -
+                  reusePenalty +
                   this.random.nextFloat() * 10;
 
                 if (!bestCandidate || score > bestCandidate.score) {
@@ -453,6 +491,7 @@ export class CrosswordStageGenerator {
         const islandPlaced = this.tryPlaceIslandPair(
           placedWords,
           usedWords,
+          previouslyUsedSet,
           gridChar,
           gridHoriz,
           gridVert,
@@ -479,6 +518,7 @@ export class CrosswordStageGenerator {
   private tryPlaceIslandPair(
     placedWords: CrosswordWordData[],
     usedWords: Set<string>,
+    previouslyUsedSet: Set<string>,
     gridChar: (string | null)[][],
     gridHoriz: boolean[][],
     gridVert: boolean[][],
@@ -506,10 +546,14 @@ export class CrosswordStageGenerator {
     }
     this.random.shuffleInPlace(coords);
 
-    const shortWords = this.validWords.filter(
+    const allShortWords = this.validWords.filter(
       (w) => !usedWords.has(w.entry.word) && w.chars.length >= 2 && w.chars.length <= 3
     );
-    this.random.shuffleInPlace(shortWords);
+    const freshShort = allShortWords.filter((w) => !previouslyUsedSet.has(w.entry.word));
+    const reusedShort = allShortWords.filter((w) => previouslyUsedSet.has(w.entry.word));
+    this.random.shuffleInPlace(freshShort);
+    this.random.shuffleInPlace(reusedShort);
+    const shortWords = [...freshShort, ...reusedShort];
 
     const maxWordChecks = Math.min(shortWords.length, 45);
     for (let i = 0; i < Math.min(coords.length, 60); i++) {
@@ -528,7 +572,10 @@ export class CrosswordStageGenerator {
           const ax = x + c1 * dx;
           const ay = y + c1 * dy;
           const ch = w1.chars[c1];
-          const bucket = this.charIndex.get(ch) || [];
+          const rawBucket = this.charIndex.get(ch) || [];
+          const freshBucket = rawBucket.filter((e) => !previouslyUsedSet.has(e.word));
+          const reusedBucket = rawBucket.filter((e) => previouslyUsedSet.has(e.word));
+          const bucket = [...freshBucket, ...reusedBucket];
 
           for (const w2Entry of bucket) {
             if (w2Entry.word === w1.entry.word || usedWords.has(w2Entry.word)) continue;
@@ -640,15 +687,27 @@ export function getSharedCrosswordGenerator(): CrosswordStageGenerator {
 export function generateCrosswordWordDataList(
   stageNumber: number,
   gridSize: number = GRID_SIZE,
-  targetWordCount?: number
+  targetWordCount?: number,
+  previouslyUsedWords?: Iterable<string>
 ): CrosswordWordData[] {
-  return getSharedCrosswordGenerator().generateStage(stageNumber, gridSize, targetWordCount);
+  return getSharedCrosswordGenerator().generateStage(
+    stageNumber,
+    gridSize,
+    targetWordCount,
+    previouslyUsedWords
+  );
 }
 
 export function generateOfficialStagePuzzle(
   stageNumber: number,
-  gridSize: number = GRID_SIZE
+  gridSize: number = GRID_SIZE,
+  previouslyUsedWords?: Iterable<string>
 ): CrosswordPuzzle {
-  const wordDataList = generateCrosswordWordDataList(stageNumber, gridSize);
+  const wordDataList = generateCrosswordWordDataList(
+    stageNumber,
+    gridSize,
+    undefined,
+    previouslyUsedWords
+  );
   return convertWordDataToPuzzle(stageNumber, wordDataList, gridSize);
 }

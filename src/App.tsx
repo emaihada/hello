@@ -925,6 +925,18 @@ export default function App() {
     soundManager.playSnapFit();
   };
 
+  const handleSelectWord = (word: WordClue) => {
+    const cells = getWordCells(word);
+    const firstUnsolved = cells.find((pos) => {
+      const c = grid[pos.row]?.[pos.col];
+      return c && !c.isSolvedLocked && c.userInput !== c.solution;
+    });
+    const target = firstUnsolved ?? { row: word.row, col: word.col };
+    setSelectedCell({ row: target.row, col: target.col });
+    setActiveDirection(word.direction);
+    soundManager.playSnapFit();
+  };
+
   const clampPan = (val: number) => Math.min(280, Math.max(-280, val));
 
   // Two-finger Pinch-to-Zoom & 1-Finger / Mouse Free Pan handlers (allows dragging beyond puzzle bounds)
@@ -1044,10 +1056,34 @@ export default function App() {
   const hasNextStage =
     currentStageIndex >= 0 && currentStageIndex + 1 < allStages.length;
 
+  // Collect all words used across existing stages so newly generated stages deprioritize them
+  const previouslyUsedWords = useMemo(() => {
+    const used = new Set<string>();
+    for (const stage of allStages) {
+      for (const word of stage.words) {
+        if (word.answer) {
+          used.add(word.answer.trim());
+        }
+      }
+    }
+    return used;
+  }, [allStages]);
+
   // Live preview of List<CrosswordWordData> for the auto-assigned stageNumber with user-chosen grid size and word count
   const previewWordDataList = useMemo(() => {
-    return generateCrosswordWordDataList(nextAutoStageNumber, createGridSize, createTargetWords);
-  }, [nextAutoStageNumber, createGridSize, createTargetWords, dictionaryWordCount]);
+    return generateCrosswordWordDataList(
+      nextAutoStageNumber,
+      createGridSize,
+      createTargetWords,
+      previouslyUsedWords
+    );
+  }, [
+    nextAutoStageNumber,
+    createGridSize,
+    createTargetWords,
+    previouslyUsedWords,
+    dictionaryWordCount,
+  ]);
 
   const handleOpenCreateStageModal = () => {
     setCreateGridSize(15);
@@ -1060,7 +1096,8 @@ export default function App() {
     const wordDataList = generateCrosswordWordDataList(
       nextAutoStageNumber,
       createGridSize,
-      createTargetWords
+      createTargetWords,
+      previouslyUsedWords
     );
     const generatedPuzzle = convertWordDataToPuzzle(
       nextAutoStageNumber,
@@ -1241,7 +1278,7 @@ export default function App() {
           2. 스테이지 선택 화면 (왼쪽 위 메인화면, 오른쪽 위 재화 수 + 설정)
       ===================================================================== */}
       {screen === 'stage_select' && (
-        <main className="h-full w-full max-w-md mx-auto px-4 py-3 flex flex-col overflow-hidden">
+        <main className="h-full w-full max-w-md md:max-w-2xl mx-auto px-4 py-3 flex flex-col overflow-hidden">
           <div className="flex items-center justify-between gap-2 mb-3 shrink-0">
             <button
               type="button"
@@ -1294,7 +1331,7 @@ export default function App() {
             role="list"
             aria-label="스테이지 목록"
           >
-            <div className="grid grid-cols-4 sm:grid-cols-5 gap-3 p-1">
+            <div className="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 gap-3 p-1">
               {allStages.map((stage, idx) => {
                 const isCleared = clearedStageIds.includes(stage.id);
                 const hasActiveInput =
@@ -1383,16 +1420,14 @@ export default function App() {
 
       {/* =====================================================================
           3. 문제 플레이 화면
-          - 단계 이름 및 확대 버튼 제거
-          - 두 손가락 핀치 줌 조작 지원
-          - 하단 문장 칸(좌 50%)과 글씨 적는 칸(우 50%)을 반반(50:50) 분할하여 작은 폰에서도 찌부러지지 않음
-          - 힌트 버튼은 작고 네모난 아이콘 버튼으로 배치 후 클릭 시 설명 모달 표시
+          - 모바일(< md): 상단 십자말풀이 보드 + 하단 반반(50:50) 분할(좌: 힌트, 우: 필기)
+          - 태블릿 전용 화면(>= md): 3단 가로 분할 (왼쪽: 힌트 화면 / 가운데: 문제 화면 / 오른쪽: 필기 영역)
       ===================================================================== */}
       {(screen === 'playing' || screen === 'gameover') && (
-        <div className="h-full w-full max-w-xl mx-auto px-2.5 py-2 flex flex-col justify-between gap-2 overflow-hidden">
+        <div className="h-full w-full max-w-xl md:max-w-7xl mx-auto px-2.5 md:px-4 py-2 md:py-3 flex flex-col justify-between gap-2 md:gap-3 overflow-hidden">
           {/* 상단 바: 목록 / 타이머 / 재화 + 설정 */}
           <div
-            className={`rounded-2xl border px-2.5 py-1.5 flex items-center justify-between gap-2 shrink-0 ${
+            className={`rounded-2xl border px-2.5 md:px-3.5 py-1.5 md:py-2 flex items-center justify-between gap-2 shrink-0 ${
               isDarkMode
                 ? 'bg-stone-900 border-stone-700'
                 : 'bg-[#EFE9DA] border-[#D8CEBE]'
@@ -1452,138 +1487,17 @@ export default function App() {
             </div>
           </div>
 
-          {/* 상단 중앙: 십자말풀이 보드 (단계 이름 및 확대 버튼 없음 · 드래그 이동 및 두 손가락 핀치 줌 지원) */}
+          {/* 반응형 메인 작업 영역:
+              - 모바일(< md): 2열 2행 (1행 전체: 문제 화면, 2행 좌: 힌트 화면, 2행 우: 필기 영역)
+              - 태블릿(>= md): 3열 1행 (좌: 힌트 화면, 중앙: 문제 화면, 우: 필기 영역) */}
           <div
-            ref={boardContainerRef}
-            onTouchStart={handleBoardTouchStart}
-            onTouchMove={handleBoardTouchMove}
-            onTouchEnd={handleBoardTouchEnd}
-            onTouchCancel={handleBoardTouchEnd}
-            onMouseDown={handleBoardMouseDown}
-            onMouseMove={handleBoardMouseMove}
-            onMouseUp={handleBoardMouseUp}
-            onMouseLeave={handleBoardMouseUp}
-            onWheel={handleBoardWheel}
-            className={`flex-1 min-h-0 rounded-2xl border flex items-center justify-center overflow-hidden touch-none select-none p-1.5 cursor-grab active:cursor-grabbing ${
-              isDarkMode
-                ? 'bg-[#151311] border-stone-800'
-                : 'bg-[#EAE3D2] border-[#D5CBB8]'
-            }`}
+            data-testid="play-workspace"
+            className="flex-1 min-h-0 grid grid-cols-2 grid-rows-[minmax(0,1fr)_200px] sm:grid-rows-[minmax(0,1fr)_235px] md:grid-cols-[250px_minmax(0,1fr)_270px] lg:grid-cols-[290px_minmax(0,1fr)_310px] md:grid-rows-1 gap-2 md:gap-3 overflow-hidden"
           >
-            {(() => {
-              const gapPx = 2;
-              const cellPx = Math.max(
-                42,
-                Math.floor(
-                  (boardBoxSize - gapPx * (currentPuzzle.size - 1)) /
-                    currentPuzzle.size
-                )
-              );
-
-              return (
-                <div
-                  data-testid="crossword-grid"
-                  style={{
-                    transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoomScale})`,
-                    transformOrigin: 'center center',
-                  }}
-                  className="transition-transform duration-75"
-                >
-                  <div
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: `repeat(${currentPuzzle.size}, ${cellPx}px)`,
-                      gridTemplateRows: `repeat(${currentPuzzle.size}, ${cellPx}px)`,
-                      gap: `${gapPx}px`,
-                    }}
-                  >
-                    {grid.map((rowArr, r) =>
-                      rowArr.map((cell, c) => {
-                        const isSelected =
-                          selectedCell.row === r && selectedCell.col === c;
-                        const isInActiveWord = activeWordCoords.some(
-                          (pos) => pos.row === r && pos.col === c
-                        );
-
-                        if (!cell.isPlayable) {
-                          return (
-                            <div
-                              key={`${r}-${c}`}
-                              aria-hidden="true"
-                              className={`w-full h-full rounded-[6px] ${
-                                isDarkMode
-                                  ? 'bg-stone-900/25'
-                                  : 'bg-[#DFD7C5]/35'
-                              }`}
-                            />
-                          );
-                        }
-
-                        return (
-                          <button
-                            key={`${r}-${c}`}
-                            type="button"
-                            onClick={() => handleCellClick(r, c)}
-                            aria-label={`${r + 1}행 ${c + 1}열 칸 ${
-                              cell.userInput ? cell.userInput : '빈칸'
-                            }`}
-                            className={`relative w-full h-full rounded-[7px] border-2 flex items-center justify-center font-bold leading-none transition-colors shadow-2xs ${
-                              isDarkMode ? 'hanji-crosshair-dark' : 'hanji-crosshair-light'
-                            } ${
-                              cell.isWrongAlert
-                                ? isDarkMode
-                                  ? 'bg-rose-950/95 border-rose-500 text-rose-200 ring-1 ring-rose-500/70'
-                                  : 'bg-[#FDE8E8] border-[#DC2626] text-[#B91C1C] ring-1 ring-[#DC2626]/50'
-                                : cell.isSolvedLocked
-                                ? isDarkMode
-                                  ? 'bg-emerald-950/85 border-emerald-500 text-emerald-100'
-                                  : 'bg-[#E6F4EE] border-[#2E6F5E] text-[#17493B]'
-                                : isSelected
-                                ? isDarkMode
-                                  ? 'bg-amber-900/80 border-amber-400 text-amber-50 ring-2 ring-amber-400 z-10'
-                                  : 'bg-[#FFF5D6] border-[#B85D3B] text-[#2C2520] ring-2 ring-[#B85D3B] z-10'
-                                : isInActiveWord
-                                ? isDarkMode
-                                  ? 'bg-stone-800 border-amber-500/80 text-stone-100'
-                                  : 'bg-[#FBF1D8] border-[#C99B68] text-[#2C2520]'
-                                : isDarkMode
-                                ? 'bg-[#282421] border-stone-600 text-stone-100'
-                                : 'bg-[#FDFBF7] border-[#B8A990] text-[#2C2520]'
-                            }`}
-                          >
-                            {cell.clueNumber !== undefined && (
-                              <span
-                                className={`absolute top-0.5 left-1 text-[8.5px] sm:text-[9px] font-mono font-bold leading-none pointer-events-none select-none z-10 ${
-                                  cell.isSolvedLocked
-                                    ? isDarkMode
-                                      ? 'text-emerald-400'
-                                      : 'text-[#2E6F5E]'
-                                    : isDarkMode
-                                    ? 'text-amber-400'
-                                    : 'text-[#8C4A27]'
-                                }`}
-                              >
-                                {cell.clueNumber}
-                              </span>
-                            )}
-                            <span className="text-base sm:text-lg font-black leading-none select-none z-10 pointer-events-none">
-                              {cell.userInput}
-                            </span>
-                          </button>
-                        );
-                      })
-                    )}
-                  </div>
-                </div>
-              );
-            })()}
-          </div>
-
-          {/* 하단 반반(50:50) 분할: 왼쪽 = 문장 칸 + 작고 네모난 힌트 버튼 / 오른쪽 = 글씨 적는 칸 */}
-          <div className="h-[200px] sm:h-[235px] grid grid-cols-2 gap-2 shrink-0">
-            {/* 왼쪽 50%: 문장 칸 */}
+            {/* [왼쪽 / 모바일 하단 좌측] 힌트 화면 */}
             <div
-              className={`h-full rounded-2xl border p-2.5 flex flex-col justify-between overflow-hidden ${
+              data-testid="hint-panel"
+              className={`col-span-1 col-start-1 row-start-2 md:col-start-1 md:row-start-1 h-full min-h-0 rounded-2xl border p-2.5 md:p-3.5 flex flex-col justify-between gap-2 overflow-hidden ${
                 isDarkMode
                   ? 'bg-stone-900 border-stone-700'
                   : 'bg-[#EFE9DA] border-[#D8CEBE]'
@@ -1592,7 +1506,7 @@ export default function App() {
               {/* 상단: 번호/방향 & 이전/다음 화살표 */}
               <div className="flex items-center justify-between gap-1 shrink-0">
                 <span
-                  className={`text-xs font-bold truncate ${
+                  className={`text-xs md:text-sm font-bold truncate ${
                     isDarkMode ? 'text-amber-400' : 'text-[#9E4726]'
                   }`}
                 >
@@ -1608,38 +1522,104 @@ export default function App() {
                     type="button"
                     onClick={() => handleCycleWord(-1)}
                     aria-label="이전 문제"
-                    className={`w-7 h-7 rounded-lg border flex items-center justify-center ${
+                    className={`w-7 h-7 md:w-8 md:h-8 rounded-lg border flex items-center justify-center ${
                       isDarkMode
-                        ? 'bg-stone-800 border-stone-600 text-stone-200'
-                        : 'bg-[#FDFBF7] border-[#C9BCA6] text-[#4A3F35]'
+                        ? 'bg-stone-800 border-stone-600 text-stone-200 hover:bg-stone-700'
+                        : 'bg-[#FDFBF7] border-[#C9BCA6] text-[#4A3F35] hover:bg-[#F3ECE0]'
                     }`}
                   >
-                    <ChevronLeft className="w-3.5 h-3.5" />
+                    <ChevronLeft className="w-3.5 h-3.5 md:w-4 md:h-4" />
                   </button>
                   <button
                     type="button"
                     onClick={() => handleCycleWord(1)}
                     aria-label="다음 문제"
-                    className={`w-7 h-7 rounded-lg border flex items-center justify-center ${
+                    className={`w-7 h-7 md:w-8 md:h-8 rounded-lg border flex items-center justify-center ${
                       isDarkMode
-                        ? 'bg-stone-800 border-stone-600 text-stone-200'
-                        : 'bg-[#FDFBF7] border-[#C9BCA6] text-[#4A3F35]'
+                        ? 'bg-stone-800 border-stone-600 text-stone-200 hover:bg-stone-700'
+                        : 'bg-[#FDFBF7] border-[#C9BCA6] text-[#4A3F35] hover:bg-[#F3ECE0]'
                     }`}
                   >
-                    <ChevronRight className="w-3.5 h-3.5" />
+                    <ChevronRight className="w-3.5 h-3.5 md:w-4 md:h-4" />
                   </button>
                 </div>
               </div>
 
-              {/* 중앙: 문제 설명 문장 */}
-              <div className="flex-1 flex items-center py-1 overflow-hidden">
+              {/* 현재 선택된 문제 설명 문장 */}
+              <div
+                className={`flex-1 md:flex-none flex items-center py-1 md:p-3 md:rounded-xl md:border overflow-hidden ${
+                  isDarkMode
+                    ? 'md:bg-stone-950/70 md:border-stone-800'
+                    : 'md:bg-[#FDFBF7] md:border-[#DFD5C3]'
+                }`}
+              >
                 <p className="text-sm sm:text-base font-bold leading-snug break-keep">
                   {activeWord?.clue}
                 </p>
               </div>
 
-              {/* 하단: 작고 네모난 힌트 아이콘 버튼 2개 (누르면 무슨 힌트인지 설명 모달 표시) */}
-              <div className="flex items-center gap-1.5 shrink-0">
+              {/* 태블릿 전용: 전체 가로/세로 힌트 목록 (클릭 시 해당 문제로 바로 이동) */}
+              <div
+                aria-label="전체 힌트 목록"
+                className="hidden md:flex md:flex-col flex-1 min-h-0 overflow-y-auto gap-1.5 pr-1"
+              >
+                {[...currentPuzzle.words]
+                  .sort((a, b) => (a.number ?? 0) - (b.number ?? 0))
+                  .map((w) => {
+                    const isCurrent = activeWord?.id === w.id;
+                    const isSolved = solvedWordIds.has(w.id);
+                    return (
+                      <button
+                        key={w.id}
+                        type="button"
+                        onClick={() => handleSelectWord(w)}
+                        className={`w-full text-left rounded-xl border px-2.5 py-2 transition-colors flex flex-col gap-0.5 shrink-0 ${
+                          isCurrent
+                            ? isDarkMode
+                              ? 'bg-amber-950/70 border-amber-500 text-amber-100'
+                              : 'bg-[#FFF5D6] border-[#B85D3B] text-[#2C2520]'
+                            : isSolved
+                            ? isDarkMode
+                              ? 'bg-emerald-950/35 border-emerald-800/60 text-emerald-300/80'
+                              : 'bg-[#EBF5EF]/80 border-[#B7D7C8] text-[#2E6F5E]'
+                            : isDarkMode
+                            ? 'bg-stone-950/40 border-stone-800 text-stone-300 hover:bg-stone-800/60'
+                            : 'bg-[#FAF6EC] border-[#E2D9C8] text-[#4A3F35] hover:bg-[#F3ECE0]'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-1">
+                          <span
+                            className={`text-[11px] font-extrabold ${
+                              isCurrent
+                                ? isDarkMode
+                                  ? 'text-amber-300'
+                                  : 'text-[#9E4726]'
+                                : isSolved
+                                ? isDarkMode
+                                  ? 'text-emerald-400'
+                                  : 'text-[#2E6F5E]'
+                                : isDarkMode
+                                ? 'text-stone-400'
+                                : 'text-[#8C7A6B]'
+                            }`}
+                          >
+                            {w.number}번 {w.direction === 'across' ? '가로' : '세로'} (
+                            {w.answer.length}글자)
+                          </span>
+                          {isSolved && (
+                            <CheckCircle2 className="w-3.5 h-3.5 text-[#2E6F5E] dark:text-emerald-400 shrink-0" />
+                          )}
+                        </div>
+                        <p className="text-xs font-semibold leading-snug line-clamp-2 break-keep">
+                          {w.clue}
+                        </p>
+                      </button>
+                    );
+                  })}
+              </div>
+
+              {/* 하단: 힌트 아이콘 버튼 2개 (누르면 무슨 힌트인지 설명 모달 표시) */}
+              <div className="flex items-center gap-1.5 md:gap-2 shrink-0">
                 <button
                   type="button"
                   onClick={() => {
@@ -1647,13 +1627,14 @@ export default function App() {
                     setActiveHintModal('letter');
                   }}
                   aria-label="한 글자 힌트 설명 보기"
-                  className={`w-9 h-9 rounded-lg border flex items-center justify-center transition-transform active:scale-95 shrink-0 ${
+                  className={`w-9 h-9 md:flex-1 md:h-10 md:px-2.5 rounded-lg md:rounded-xl border flex items-center justify-center gap-1.5 text-xs font-bold transition-transform active:scale-95 shrink-0 ${
                     isDarkMode
                       ? 'bg-stone-800 border-amber-700/70 text-amber-300 hover:bg-stone-700'
                       : 'bg-[#FDFBF7] border-[#D4B88C] text-[#8C4A27] hover:bg-[#F7EFE0]'
                   }`}
                 >
-                  <Lightbulb className="w-4 h-4" />
+                  <Lightbulb className="w-4 h-4 shrink-0" />
+                  <span className="hidden md:inline whitespace-nowrap">글자 힌트</span>
                 </button>
 
                 <button
@@ -1663,19 +1644,151 @@ export default function App() {
                     setActiveHintModal('word');
                   }}
                   aria-label="한 단어 힌트 설명 보기"
-                  className={`w-9 h-9 rounded-lg border flex items-center justify-center transition-transform active:scale-95 shrink-0 ${
+                  className={`w-9 h-9 md:flex-1 md:h-10 md:px-2.5 rounded-lg md:rounded-xl border flex items-center justify-center gap-1.5 text-xs font-bold transition-transform active:scale-95 shrink-0 ${
                     isDarkMode
                       ? 'bg-amber-900/50 border-amber-500/80 text-amber-200 hover:bg-amber-900/70'
                       : 'bg-[#F5E6C8] border-[#C99E5A] text-[#7A3E18] hover:bg-[#EDD9B2]'
                   }`}
                 >
-                  <Sparkles className="w-4 h-4" />
+                  <Sparkles className="w-4 h-4 shrink-0" />
+                  <span className="hidden md:inline whitespace-nowrap">단어 힌트</span>
                 </button>
               </div>
             </div>
 
-            {/* 오른쪽 50%: 글씨 적는 칸 (손글씨 또는 타이핑) */}
-            <div className="h-full min-w-0 overflow-hidden">
+            {/* [가운데 / 모바일 상단] 십자말풀이 문제 화면 (드래그 이동 및 두 손가락 핀치 줌 지원) */}
+            <div
+              ref={boardContainerRef}
+              data-testid="board-panel"
+              onTouchStart={handleBoardTouchStart}
+              onTouchMove={handleBoardTouchMove}
+              onTouchEnd={handleBoardTouchEnd}
+              onTouchCancel={handleBoardTouchEnd}
+              onMouseDown={handleBoardMouseDown}
+              onMouseMove={handleBoardMouseMove}
+              onMouseUp={handleBoardMouseUp}
+              onMouseLeave={handleBoardMouseUp}
+              onWheel={handleBoardWheel}
+              className={`col-span-2 col-start-1 row-start-1 md:col-span-1 md:col-start-2 md:row-start-1 h-full min-h-0 rounded-2xl border flex items-center justify-center overflow-hidden touch-none select-none p-1.5 md:p-3 cursor-grab active:cursor-grabbing ${
+                isDarkMode
+                  ? 'bg-[#151311] border-stone-800'
+                  : 'bg-[#EAE3D2] border-[#D5CBB8]'
+              }`}
+            >
+              {(() => {
+                const gapPx = 2;
+                const cellPx = Math.max(
+                  42,
+                  Math.floor(
+                    (boardBoxSize - gapPx * (currentPuzzle.size - 1)) /
+                      currentPuzzle.size
+                  )
+                );
+
+                return (
+                  <div
+                    data-testid="crossword-grid"
+                    style={{
+                      transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoomScale})`,
+                      transformOrigin: 'center center',
+                    }}
+                    className="transition-transform duration-75"
+                  >
+                    <div
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: `repeat(${currentPuzzle.size}, ${cellPx}px)`,
+                        gridTemplateRows: `repeat(${currentPuzzle.size}, ${cellPx}px)`,
+                        gap: `${gapPx}px`,
+                      }}
+                    >
+                      {grid.map((rowArr, r) =>
+                        rowArr.map((cell, c) => {
+                          const isSelected =
+                            selectedCell.row === r && selectedCell.col === c;
+                          const isInActiveWord = activeWordCoords.some(
+                            (pos) => pos.row === r && pos.col === c
+                          );
+
+                          if (!cell.isPlayable) {
+                            return (
+                              <div
+                                key={`${r}-${c}`}
+                                aria-hidden="true"
+                                className={`w-full h-full rounded-[6px] ${
+                                  isDarkMode
+                                    ? 'bg-stone-900/25'
+                                    : 'bg-[#DFD7C5]/35'
+                                }`}
+                              />
+                            );
+                          }
+
+                          return (
+                            <button
+                              key={`${r}-${c}`}
+                              type="button"
+                              onClick={() => handleCellClick(r, c)}
+                              aria-label={`${r + 1}행 ${c + 1}열 칸 ${
+                                cell.userInput ? cell.userInput : '빈칸'
+                              }`}
+                              className={`relative w-full h-full rounded-[7px] border-2 flex items-center justify-center font-bold leading-none transition-colors shadow-2xs ${
+                                isDarkMode ? 'hanji-crosshair-dark' : 'hanji-crosshair-light'
+                              } ${
+                                cell.isWrongAlert
+                                  ? isDarkMode
+                                    ? 'bg-rose-950/95 border-rose-500 text-rose-200 ring-1 ring-rose-500/70'
+                                    : 'bg-[#FDE8E8] border-[#DC2626] text-[#B91C1C] ring-1 ring-[#DC2626]/50'
+                                  : cell.isSolvedLocked
+                                  ? isDarkMode
+                                    ? 'bg-emerald-950/85 border-emerald-500 text-emerald-100'
+                                    : 'bg-[#E6F4EE] border-[#2E6F5E] text-[#17493B]'
+                                  : isSelected
+                                  ? isDarkMode
+                                    ? 'bg-amber-900/80 border-amber-400 text-amber-50 ring-2 ring-amber-400 z-10'
+                                    : 'bg-[#FFF5D6] border-[#B85D3B] text-[#2C2520] ring-2 ring-[#B85D3B] z-10'
+                                  : isInActiveWord
+                                  ? isDarkMode
+                                    ? 'bg-stone-800 border-amber-500/80 text-stone-100'
+                                    : 'bg-[#FBF1D8] border-[#C99B68] text-[#2C2520]'
+                                  : isDarkMode
+                                  ? 'bg-[#282421] border-stone-600 text-stone-100'
+                                  : 'bg-[#FDFBF7] border-[#B8A990] text-[#2C2520]'
+                              }`}
+                            >
+                              {cell.clueNumber !== undefined && (
+                                <span
+                                  className={`absolute top-0.5 left-1 text-[8.5px] sm:text-[9px] font-mono font-bold leading-none pointer-events-none select-none z-10 ${
+                                    cell.isSolvedLocked
+                                      ? isDarkMode
+                                        ? 'text-emerald-400'
+                                        : 'text-[#2E6F5E]'
+                                      : isDarkMode
+                                      ? 'text-amber-400'
+                                      : 'text-[#8C4A27]'
+                                  }`}
+                                >
+                                  {cell.clueNumber}
+                                </span>
+                              )}
+                              <span className="text-base sm:text-lg font-black leading-none select-none z-10 pointer-events-none">
+                                {cell.userInput}
+                              </span>
+                            </button>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* [오른쪽 / 모바일 하단 우측] 필기 영역 (손글씨 또는 타이핑) */}
+            <div
+              data-testid="writing-panel"
+              className="col-span-1 col-start-2 row-start-2 md:col-start-3 md:row-start-1 h-full min-h-0 min-w-0 overflow-hidden"
+            >
               {inputMode === 'handwriting' ? (
                 <HandwritingPad
                   selectedCellKey={`${currentPuzzle.id}-${selectedCell.row}-${selectedCell.col}`}

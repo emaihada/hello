@@ -273,15 +273,15 @@ export const HandwritingPad: React.FC<HandwritingPadProps> = ({
 
   return (
     <div
-      className={`h-full rounded-2xl border p-2 flex flex-col justify-between gap-1.5 transition-colors overflow-hidden ${
+      className={`h-full rounded-2xl border p-2 md:p-3 flex flex-col justify-between gap-1.5 md:gap-2.5 transition-colors overflow-hidden ${
         isDarkMode
           ? 'bg-stone-900 border-stone-700 text-stone-100'
           : 'bg-[#EFE9DA] border-[#D8CEBE] text-[#2C2520]'
       }`}
     >
-      {/* 상단: 손글씨 인식 추천 글자 5개 (1초 정지 시 1순위 글자 자동 입력) */}
+      {/* 상단: 손글씨 인식 추천 글자 5개 (정지 시 1순위 글자 자동 입력) */}
       <div
-        className="grid grid-cols-5 gap-1 shrink-0"
+        className="grid grid-cols-5 gap-1 md:gap-1.5 shrink-0"
         role="group"
         aria-label="손글씨 인식 추천 글자 5개"
       >
@@ -293,7 +293,7 @@ export const HandwritingPad: React.FC<HandwritingPadProps> = ({
               type="button"
               onClick={() => handleCandidateClick(char)}
               aria-label={`추천 글자 ${char} 선택`}
-              className={`relative overflow-hidden h-9 sm:h-10 rounded-lg font-bold text-base sm:text-lg flex items-center justify-center border transition-all active:scale-95 whitespace-nowrap shrink-0 ${
+              className={`relative overflow-hidden h-9 sm:h-10 md:h-12 rounded-lg md:rounded-xl font-bold text-base sm:text-lg md:text-xl flex items-center justify-center border transition-all active:scale-95 whitespace-nowrap shrink-0 ${
                 idx === 0
                   ? isDarkMode
                     ? 'bg-amber-700 border-amber-500 text-amber-50 ring-2 ring-amber-400/60'
@@ -319,7 +319,7 @@ export const HandwritingPad: React.FC<HandwritingPadProps> = ({
           ) : (
             <div
               key={`empty-${idx}`}
-              className={`h-9 sm:h-10 rounded-lg border border-dashed flex items-center justify-center text-xs ${
+              className={`h-9 sm:h-10 md:h-12 rounded-lg md:rounded-xl border border-dashed flex items-center justify-center text-xs md:text-sm ${
                 isDarkMode
                   ? 'border-stone-700 bg-stone-950/40 text-stone-600'
                   : 'border-[#CBBFA8] bg-[#F8F4EA] text-[#B0A392]'
@@ -335,28 +335,28 @@ export const HandwritingPad: React.FC<HandwritingPadProps> = ({
       <div className="flex-1 min-h-0 flex items-center justify-center overflow-hidden">
         <canvas
           ref={canvasRef}
-          width={180}
-          height={130}
+          width={220}
+          height={200}
           data-testid="handwriting-canvas"
           aria-label="손글씨 입력 패드"
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerUp}
-          className={`w-full h-full rounded-xl border-2 touch-none cursor-crosshair shadow-inner ${
+          className={`w-full h-full md:h-auto md:aspect-square md:max-h-full rounded-xl border-2 touch-none cursor-crosshair shadow-inner ${
             isDarkMode ? 'border-stone-600' : 'border-[#C4B69E]'
           }`}
         />
       </div>
 
       {/* 하단: 뒤로가는 화살표(한 획 지우기) & 지우개(전부 삭제) */}
-      <div className="grid grid-cols-2 gap-1.5 shrink-0">
+      <div className="grid grid-cols-2 gap-1.5 md:gap-2 shrink-0">
         <button
           type="button"
           onClick={handleUndoStroke}
           disabled={strokes.length === 0}
           aria-label="한 획 지우기"
-          className={`h-9 rounded-lg border font-bold text-xs flex items-center justify-center gap-1 transition-colors whitespace-nowrap shrink-0 ${
+          className={`h-9 md:h-11 rounded-lg md:rounded-xl border font-bold text-xs md:text-sm flex items-center justify-center gap-1 transition-colors whitespace-nowrap shrink-0 ${
             strokes.length === 0
               ? isDarkMode
                 ? 'bg-stone-800/40 border-stone-800 text-stone-600 cursor-not-allowed'
@@ -366,7 +366,7 @@ export const HandwritingPad: React.FC<HandwritingPadProps> = ({
               : 'bg-[#FDFBF7] border-[#C9BCA6] text-[#2C2520] hover:bg-[#F3ECE0] active:scale-95'
           }`}
         >
-          <Undo2 className="w-3.5 h-3.5" />
+          <Undo2 className="w-3.5 h-3.5 md:w-4 md:h-4" />
           <span>한 획</span>
         </button>
 
@@ -374,13 +374,13 @@ export const HandwritingPad: React.FC<HandwritingPadProps> = ({
           type="button"
           onClick={handleClearAllStrokes}
           aria-label="전부 지우기"
-          className={`h-9 rounded-lg border font-bold text-xs flex items-center justify-center gap-1 transition-colors whitespace-nowrap shrink-0 ${
+          className={`h-9 md:h-11 rounded-lg md:rounded-xl border font-bold text-xs md:text-sm flex items-center justify-center gap-1 transition-colors whitespace-nowrap shrink-0 ${
             isDarkMode
               ? 'bg-rose-950/60 border-rose-800/80 text-rose-200 hover:bg-rose-900/70 active:scale-95'
               : 'bg-[#FDF2F0] border-[#E2B4AD] text-[#9E2A2B] hover:bg-[#F9E3DF] active:scale-95'
           }`}
         >
-          <Eraser className="w-3.5 h-3.5" />
+          <Eraser className="w-3.5 h-3.5 md:w-4 md:h-4" />
           <span>지우개</span>
         </button>
       </div>

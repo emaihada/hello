@@ -28,7 +28,15 @@ export interface CrosswordPuzzle {
 
 export const INITIAL_STAGE_COUNT = 8;
 
-export const STAGE_PUZZLES: CrosswordPuzzle[] = Array.from(
-  { length: INITIAL_STAGE_COUNT },
-  (_, idx) => generateOfficialStagePuzzle(idx + 1)
-);
+export const STAGE_PUZZLES: CrosswordPuzzle[] = (() => {
+  const puzzles: CrosswordPuzzle[] = [];
+  const usedWords = new Set<string>();
+  for (let idx = 0; idx < INITIAL_STAGE_COUNT; idx++) {
+    const puzzle = generateOfficialStagePuzzle(idx + 1, undefined, usedWords);
+    for (const w of puzzle.words) {
+      usedWords.add(w.answer);
+    }
+    puzzles.push(puzzle);
+  }
+  return puzzles;
+})();
