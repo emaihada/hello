@@ -6,12 +6,12 @@ import {
   Clock,
   Lightbulb,
   Sparkles,
-  Lock,
   CheckCircle2,
   Home,
   ChevronLeft,
   ChevronRight,
   X,
+  Plus,
 } from 'lucide-react';
 import {
   STAGE_PUZZLES,
@@ -19,6 +19,14 @@ import {
   type Direction,
   type WordClue,
 } from './game/puzzles.ts';
+import {
+  generateCrosswordWordDataList,
+  convertWordDataToPuzzle,
+  getSharedCrosswordGenerator,
+  Resources,
+  JsonUtility,
+} from './game/wordcrossGenerator.ts';
+import type { WordDatabase } from './game/defaultWordcrossJson.ts';
 import {
   buildCrosswordGrid,
   applyCellInput,
@@ -39,7 +47,7 @@ import { StageClearModal } from './components/StageClearModal.tsx';
 
 type ScreenState = 'title' | 'stage_select' | 'playing' | 'gameover';
 
-const STORAGE_KEY = 'ongeul_crossword_save_v3';
+const STORAGE_KEY = 'ongeul_crossword_save_v5';
 
 interface ActivePuzzleSave {
   puzzleId: string;
@@ -55,11 +63,15 @@ interface SavedGameState {
   currency: number;
   highestReachedStage: number;
   clearedStageIds: string[];
+  startedStageIds?: string[];
+  unlockedStageIds?: string[];
+  customStages?: CrosswordPuzzle[];
   settings?: {
     inputMode?: 'handwriting' | 'typing';
     bgmEnabled?: boolean;
     sfxEnabled?: boolean;
     isDarkMode?: boolean;
+    autoCommitDelaySec?: number;
   };
   activePuzzle?: ActivePuzzleSave | null;
 }
@@ -83,11 +95,13 @@ function saveStateToStorage(updater: (prev: SavedGameState) => SavedGameState) {
       currency: INITIAL_CURRENCY,
       highestReachedStage: 0,
       clearedStageIds: [],
+      startedStageIds: [],
       settings: {
         inputMode: 'handwriting',
         bgmEnabled: true,
         sfxEnabled: true,
         isDarkMode: false,
+        autoCommitDelaySec: 1.5,
       },
       activePuzzle: null,
     };
@@ -114,6 +128,9 @@ export default function App() {
   const [inputMode, setInputMode] = useState<'handwriting' | 'typing'>(
     initialSave?.settings?.inputMode ?? 'handwriting'
   );
+  const [autoCommitDelaySec, setAutoCommitDelaySec] = useState<number>(
+    initialSave?.settings?.autoCommitDelaySec ?? 1.5
+  );
   const [bgmEnabled, setBgmEnabled] = useState<boolean>(
     initialSave?.settings?.bgmEnabled ?? true
   );
@@ -128,7 +145,10 @@ export default function App() {
   // Small Square Hint Button Description Modal ('letter' | 'word' | null)
   const [activeHintModal, setActiveHintModal] = useState<'letter' | 'word' | null>(null);
 
-  // Progression & Currency
+  // Delete Stage Confirmation Modal
+  const [stageToDelete, setStageToDelete] = useState<CrosswordPuzzle | null>(null);
+
+  // Progression, Currency & Official Stages (Default + User-Generated Stages)
   const [currency, setCurrency] = useState<number>(
     initialSave?.currency ?? INITIAL_CURRENCY
   );
@@ -138,13 +158,53 @@ export default function App() {
   const [clearedStageIds, setClearedStageIds] = useState<string[]>(
     initialSave?.clearedStageIds ?? []
   );
+  const [startedStageIds, setStartedStageIds] = useState<string[]>(
+    initialSave?.startedStageIds ?? []
+  );
+  const [unlockedStageIds, setUnlockedStageIds] = useState<string[]>(
+    initialSave?.unlockedStageIds ?? [STAGE_PUZZLES[0].id]
+  );
+  const [customStages, setCustomStages] = useState<CrosswordPuzzle[]>(
+    initialSave?.customStages ?? []
+  );
+
+  // Combined Official Stage List (Base stages + User-generated official stages)
+  const allStages = useMemo(() => {
+    const map = new Map<string, CrosswordPuzzle>();
+    for (const s of STAGE_PUZZLES) {
+      map.set(s.id, s);
+    }
+    for (const cs of customStages) {
+      map.set(cs.id, cs);
+    }
+    return Array.from(map.values()).sort(
+      (a, b) => (a.stageNumber ?? 0) - (b.stageNumber ?? 0)
+    );
+  }, [customStages]);
+
+  // Next automatic stage number for user creation (auto-assigned, no manual input needed)
+  const nextAutoStageNumber = useMemo(() => {
+    return allStages.reduce((max, s) => Math.max(max, s.stageNumber ?? 0), 0) + 1;
+  }, [allStages]);
+
+  // Stage Creation Modal State (on Stage Select Screen)
+  const [isCreateStageOpen, setIsCreateStageOpen] = useState<boolean>(false);
+  const [createGridSize, setCreateGridSize] = useState<number>(15);
+  const [createTargetWords, setCreateTargetWords] = useState<number>(20);
+  const [dictionaryWordCount, setDictionaryWordCount] = useState<number>(() =>
+    getSharedCrosswordGenerator().getTotalWordCount()
+  );
 
   // Active Puzzle State - Restore from saved if available
   const initialPuzzleInfo = useMemo(() => {
     const ap = initialSave?.activePuzzle;
+    const initialAllStages = [
+      ...STAGE_PUZZLES,
+      ...(initialSave?.customStages ?? []),
+    ];
     if (ap) {
-      const found = STAGE_PUZZLES.find((p) => p.id === ap.puzzleId);
-      if (found) {
+      const found = initialAllStages.find((p) => p.id === ap.puzzleId);
+      if (found && Array.isArray(ap.grid) && ap.grid.length === found.size) {
         return {
           puzzle: found,
           grid: ap.grid,
@@ -183,18 +243,48 @@ export default function App() {
     Boolean(initialSave?.activePuzzle)
   );
 
-  // Two-Finger Pinch Zoom & Pan State
+  // Board Container Measurement & Free Drag + Two-Finger Pinch Zoom State
+  const boardContainerRef = useRef<HTMLDivElement | null>(null);
+  const [boardBoxSize, setBoardBoxSize] = useState<number>(300);
   const [zoomScale, setZoomScale] = useState<number>(1.0);
   const [panOffset, setPanOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const hasDraggedRef = useRef<boolean>(false);
   const pinchStateRef = useRef<{
     initialDistance: number | null;
     initialScale: number;
     lastPanPoint: { x: number; y: number } | null;
+    isMouseDown: boolean;
+    dragDistance: number;
   }>({
     initialDistance: null,
     initialScale: 1.0,
     lastPanPoint: null,
+    isMouseDown: false,
+    dragDistance: 0,
   });
+
+  useEffect(() => {
+    if (screen !== 'playing' && screen !== 'gameover') return;
+    const el = boardContainerRef.current;
+    if (!el) return;
+
+    const updateSize = () => {
+      const rect = el.getBoundingClientRect();
+      const minDim = Math.min(rect.width, rect.height);
+      if (minDim > 0) {
+        setBoardBoxSize(Math.max(180, Math.floor(minDim - 14)));
+      }
+    };
+
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(el);
+    window.addEventListener('resize', updateSize);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', updateSize);
+    };
+  }, [screen, currentPuzzle.size]);
 
   // Timer & Rewards
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(
@@ -259,13 +349,15 @@ export default function App() {
     soundManager.setConfig(bgmEnabled, sfxEnabled);
   }, [bgmEnabled, sfxEnabled]);
 
-  // Persist Profile and Settings
+  // Persist Profile, Official Custom Stages, and Settings
   useEffect(() => {
     saveStateToStorage((prev) => ({
       ...prev,
       currency,
       highestReachedStage,
       clearedStageIds,
+      unlockedStageIds,
+      customStages,
       settings: {
         inputMode,
         bgmEnabled,
@@ -277,6 +369,8 @@ export default function App() {
     currency,
     highestReachedStage,
     clearedStageIds,
+    unlockedStageIds,
+    customStages,
     inputMode,
     bgmEnabled,
     sfxEnabled,
@@ -371,7 +465,12 @@ export default function App() {
   const startPuzzle = useCallback((puzzle: CrosswordPuzzle, forceFresh = false) => {
     const saved = loadInitialSave();
     const ap = saved?.activePuzzle;
-    const canResume = !forceFresh && ap && ap.puzzleId === puzzle.id;
+    const canResume =
+      !forceFresh &&
+      ap &&
+      ap.puzzleId === puzzle.id &&
+      Array.isArray(ap.grid) &&
+      ap.grid.length === puzzle.size;
 
     if (canResume && ap) {
       setCurrentPuzzle(puzzle);
@@ -413,14 +512,14 @@ export default function App() {
     const saved = loadInitialSave();
     const ap = saved?.activePuzzle;
     if (ap) {
-      const found = STAGE_PUZZLES.find((p) => p.id === ap.puzzleId);
+      const found = allStages.find((p) => p.id === ap.puzzleId);
       if (found) {
         startPuzzle(found, false);
         return;
       }
     }
     setScreen('stage_select');
-  }, [startPuzzle]);
+  }, [allStages, startPuzzle]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -455,6 +554,25 @@ export default function App() {
     return getWordCells(activeWord);
   }, [activeWord]);
 
+  const currentPuzzleSyllables = useMemo(() => {
+    const set = new Set<string>();
+    for (const w of currentPuzzle.words) {
+      for (const ch of Array.from(w.answer)) {
+        set.add(ch);
+      }
+    }
+    return Array.from(set);
+  }, [currentPuzzle]);
+
+  const markCurrentStageStarted = useCallback(() => {
+    setStartedStageIds((prev) => {
+      if (prev.includes(currentPuzzle.id)) return prev;
+      const updated = [...prev, currentPuzzle.id];
+      saveStateToStorage((s) => ({ ...s, startedStageIds: updated }));
+      return updated;
+    });
+  }, [currentPuzzle.id]);
+
   const advanceSelectionAfterInput = useCallback(
     (nextGrid: GridCell[][], currentRow: number, currentCol: number) => {
       if (activeWord) {
@@ -462,7 +580,16 @@ export default function App() {
         const currentIndex = coords.findIndex(
           (pos) => pos.row === currentRow && pos.col === currentCol
         );
+        // 1. Check remaining cells after currentIndex in the current word
         for (let i = currentIndex + 1; i < coords.length; i++) {
+          const c = nextGrid[coords[i].row][coords[i].col];
+          if (!c.isSolvedLocked && c.userInput !== c.solution) {
+            setSelectedCell({ row: coords[i].row, col: coords[i].col });
+            return;
+          }
+        }
+        // 2. Check preceding cells in the current word if not yet completed
+        for (let i = 0; i < currentIndex; i++) {
           const c = nextGrid[coords[i].row][coords[i].col];
           if (!c.isSolvedLocked && c.userInput !== c.solution) {
             setSelectedCell({ row: coords[i].row, col: coords[i].col });
@@ -471,7 +598,17 @@ export default function App() {
         }
       }
 
-      for (const word of currentPuzzle.words) {
+      // 3. Move to the next numbered word sequentially (e.g., 18 -> 19), wrapping around only if needed
+      const sortedWords = [...currentPuzzle.words].sort(
+        (a, b) => (a.number ?? 0) - (b.number ?? 0)
+      );
+      const currentWordIdx = activeWord
+        ? sortedWords.findIndex((w) => w.id === activeWord.id)
+        : -1;
+
+      for (let offset = 1; offset <= sortedWords.length; offset++) {
+        const nextIdx = (currentWordIdx + offset + sortedWords.length) % sortedWords.length;
+        const word = sortedWords[nextIdx];
         for (const pos of getWordCells(word)) {
           const c = nextGrid[pos.row][pos.col];
           if (!c.isSolvedLocked && c.userInput !== c.solution) {
@@ -494,13 +631,21 @@ export default function App() {
         setRunWordRewardEarned((prev) => prev + newlyEarnedWordCoins);
 
         if (currentPuzzle.stageNumber !== undefined) {
-          const idx = currentPuzzle.stageNumber - 1;
+          const idx = allStages.findIndex((s) => s.id === currentPuzzle.id);
           setClearedStageIds((prev) =>
             prev.includes(currentPuzzle.id) ? prev : [...prev, currentPuzzle.id]
           );
-          setHighestReachedStage((prev) =>
-            Math.min(STAGE_PUZZLES.length - 1, Math.max(prev, idx + 1))
-          );
+          if (idx >= 0) {
+            setHighestReachedStage((prev) =>
+              Math.min(allStages.length - 1, Math.max(prev, idx + 1))
+            );
+            const nextStage = allStages[idx + 1];
+            if (nextStage) {
+              setUnlockedStageIds((prev) =>
+                prev.includes(nextStage.id) ? prev : [...prev, nextStage.id]
+              );
+            }
+          }
         }
 
         if (timerStartTimestampRef.current !== null) {
@@ -514,7 +659,7 @@ export default function App() {
       }
       return false;
     },
-    [currentPuzzle]
+    [currentPuzzle, allStages]
   );
 
   const handleEnterCharacter = useCallback(
@@ -536,6 +681,8 @@ export default function App() {
           return;
         }
       }
+
+      markCurrentStageStarted();
 
       const result = applyCellInput(
         grid,
@@ -577,6 +724,7 @@ export default function App() {
       activeWord,
       currentPuzzle,
       solvedWordIds,
+      markCurrentStageStarted,
       handleCheckPuzzleVictory,
       advanceSelectionAfterInput,
     ]
@@ -586,7 +734,26 @@ export default function App() {
     (wordStr: string) => {
       if (screen !== 'playing' || !activeWord) return;
       const chars = Array.from(wordStr.trim());
+      if (chars.length === 0) return;
+
+      markCurrentStageStarted();
+
       const coords = getWordCells(activeWord);
+      const selectedIdx = coords.findIndex(
+        (pos) => pos.row === selectedCell.row && pos.col === selectedCell.col
+      );
+
+      // If user typed full word length, fill from 0.
+      // If user selected an intermediate cell (e.g. 2nd cell of '원두막') and typed '두막',
+      // start filling from selectedIdx so it seamlessly completes '원두막'.
+      let startIdx = 0;
+      if (chars.length === coords.length) {
+        startIdx = 0;
+      } else if (selectedIdx >= 0 && selectedIdx + chars.length <= coords.length) {
+        startIdx = selectedIdx;
+      } else if (selectedIdx >= 0) {
+        startIdx = Math.max(0, coords.length - chars.length);
+      }
 
       let workingGrid = grid;
       const workingSolved = new Set(solvedWordIds);
@@ -594,8 +761,10 @@ export default function App() {
       let anyWrong = false;
       const newlySolvedList: WordClue[] = [];
 
-      coords.forEach((pos, idx) => {
-        if (idx >= chars.length) return;
+      chars.forEach((ch, offset) => {
+        const targetIdx = startIdx + offset;
+        if (targetIdx >= coords.length) return;
+        const pos = coords[targetIdx];
         const cell = workingGrid[pos.row][pos.col];
         if (cell.isSolvedLocked) return;
 
@@ -605,7 +774,7 @@ export default function App() {
           workingSolved,
           pos.row,
           pos.col,
-          chars[idx]
+          ch
         );
         workingGrid = res.nextGrid;
         if (!res.isCharCorrect) {
@@ -625,6 +794,9 @@ export default function App() {
       setGrid(workingGrid);
       setSolvedWordIds(workingSolved);
 
+      const lastFilledIdx = Math.min(coords.length - 1, startIdx + chars.length - 1);
+      const lastFilledPos = coords[lastFilledIdx] || coords[coords.length - 1];
+
       if (newlySolvedList.length > 0) {
         soundManager.playWordComplete();
         const didWin = handleCheckPuzzleVictory(workingGrid, totalReward);
@@ -633,22 +805,29 @@ export default function App() {
           setRunWordRewardEarned((prev) => prev + totalReward);
           advanceSelectionAfterInput(
             workingGrid,
-            coords[coords.length - 1].row,
-            coords[coords.length - 1].col
+            lastFilledPos.row,
+            lastFilledPos.col
           );
         }
       } else if (anyWrong) {
         soundManager.playWrongBuzzer();
       } else {
         soundManager.playSnapFit();
+        advanceSelectionAfterInput(
+          workingGrid,
+          lastFilledPos.row,
+          lastFilledPos.col
+        );
       }
     },
     [
       screen,
       activeWord,
+      selectedCell,
       grid,
       solvedWordIds,
       currentPuzzle,
+      markCurrentStageStarted,
       handleCheckPuzzleVictory,
       advanceSelectionAfterInput,
     ]
@@ -713,6 +892,10 @@ export default function App() {
   };
 
   const handleCellClick = (row: number, col: number) => {
+    if (hasDraggedRef.current) {
+      hasDraggedRef.current = false;
+      return;
+    }
     const cell = grid[row]?.[col];
     if (!cell || !cell.isPlayable) return;
 
@@ -742,7 +925,9 @@ export default function App() {
     soundManager.playSnapFit();
   };
 
-  // Two-finger Pinch-to-Zoom & Pan handlers on the Crossword Board
+  const clampPan = (val: number) => Math.min(280, Math.max(-280, val));
+
+  // Two-finger Pinch-to-Zoom & 1-Finger / Mouse Free Pan handlers (allows dragging beyond puzzle bounds)
   const handleBoardTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
     if (e.touches.length === 2) {
       const dx = e.touches[0].clientX - e.touches[1].clientX;
@@ -753,11 +938,14 @@ export default function App() {
         x: (e.touches[0].clientX + e.touches[1].clientX) / 2,
         y: (e.touches[0].clientY + e.touches[1].clientY) / 2,
       };
-    } else if (e.touches.length === 1 && zoomScale > 1.02) {
+      hasDraggedRef.current = true;
+    } else if (e.touches.length === 1) {
       pinchStateRef.current.lastPanPoint = {
         x: e.touches[0].clientX,
         y: e.touches[0].clientY,
       };
+      pinchStateRef.current.dragDistance = 0;
+      hasDraggedRef.current = false;
     }
   };
 
@@ -768,7 +956,7 @@ export default function App() {
       const dy = e.touches[0].clientY - e.touches[1].clientY;
       const dist = Math.hypot(dx, dy);
       const ratio = dist / Math.max(10, pinchStateRef.current.initialDistance);
-      const nextScale = Math.min(2.4, Math.max(1.0, pinchStateRef.current.initialScale * ratio));
+      const nextScale = Math.min(2.5, Math.max(0.85, pinchStateRef.current.initialScale * ratio));
       setZoomScale(nextScale);
 
       const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
@@ -777,21 +965,24 @@ export default function App() {
         const deltaX = midX - pinchStateRef.current.lastPanPoint.x;
         const deltaY = midY - pinchStateRef.current.lastPanPoint.y;
         setPanOffset((prev) => ({
-          x: Math.min(120, Math.max(-120, prev.x + deltaX)),
-          y: Math.min(120, Math.max(-120, prev.y + deltaY)),
+          x: clampPan(prev.x + deltaX),
+          y: clampPan(prev.y + deltaY),
         }));
       }
       pinchStateRef.current.lastPanPoint = { x: midX, y: midY };
-      if (nextScale <= 1.02) {
-        setPanOffset({ x: 0, y: 0 });
-      }
-    } else if (e.touches.length === 1 && zoomScale > 1.02 && pinchStateRef.current.lastPanPoint) {
+    } else if (e.touches.length === 1 && pinchStateRef.current.lastPanPoint) {
       const deltaX = e.touches[0].clientX - pinchStateRef.current.lastPanPoint.x;
       const deltaY = e.touches[0].clientY - pinchStateRef.current.lastPanPoint.y;
-      setPanOffset((prev) => ({
-        x: Math.min(120, Math.max(-120, prev.x + deltaX)),
-        y: Math.min(120, Math.max(-120, prev.y + deltaY)),
-      }));
+      const stepDist = Math.hypot(deltaX, deltaY);
+      pinchStateRef.current.dragDistance += stepDist;
+
+      if (pinchStateRef.current.dragDistance > 6) {
+        hasDraggedRef.current = true;
+        setPanOffset((prev) => ({
+          x: clampPan(prev.x + deltaX),
+          y: clampPan(prev.y + deltaY),
+        }));
+      }
       pinchStateRef.current.lastPanPoint = {
         x: e.touches[0].clientX,
         y: e.touches[0].clientY,
@@ -804,23 +995,125 @@ export default function App() {
     pinchStateRef.current.lastPanPoint = null;
   };
 
+  const handleBoardMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    pinchStateRef.current.isMouseDown = true;
+    pinchStateRef.current.lastPanPoint = { x: e.clientX, y: e.clientY };
+    pinchStateRef.current.dragDistance = 0;
+    hasDraggedRef.current = false;
+  };
+
+  const handleBoardMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!pinchStateRef.current.isMouseDown || !pinchStateRef.current.lastPanPoint) return;
+    const deltaX = e.clientX - pinchStateRef.current.lastPanPoint.x;
+    const deltaY = e.clientY - pinchStateRef.current.lastPanPoint.y;
+    const stepDist = Math.hypot(deltaX, deltaY);
+    pinchStateRef.current.dragDistance += stepDist;
+
+    if (pinchStateRef.current.dragDistance > 6) {
+      hasDraggedRef.current = true;
+      setPanOffset((prev) => ({
+        x: clampPan(prev.x + deltaX),
+        y: clampPan(prev.y + deltaY),
+      }));
+    }
+    pinchStateRef.current.lastPanPoint = { x: e.clientX, y: e.clientY };
+  };
+
+  const handleBoardMouseUp = () => {
+    pinchStateRef.current.isMouseDown = false;
+    pinchStateRef.current.lastPanPoint = null;
+  };
+
   const handleBoardWheel = (e: React.WheelEvent<HTMLDivElement>) => {
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
-      setZoomScale((prev) => {
-        const next = Math.min(2.4, Math.max(1.0, prev - e.deltaY * 0.005));
-        if (next <= 1.02) setPanOffset({ x: 0, y: 0 });
-        return next;
-      });
+      setZoomScale((prev) => Math.min(2.5, Math.max(0.85, prev - e.deltaY * 0.005)));
+    } else {
+      setPanOffset((prev) => ({
+        x: clampPan(prev.x - e.deltaX * 0.6),
+        y: clampPan(prev.y - e.deltaY * 0.6),
+      }));
     }
   };
 
-  const currentStageIndex = currentPuzzle.stageNumber
-    ? currentPuzzle.stageNumber - 1
-    : -1;
+  const currentStageIndex = useMemo(
+    () => allStages.findIndex((s) => s.id === currentPuzzle.id),
+    [allStages, currentPuzzle.id]
+  );
   const hasNextStage =
-    currentStageIndex >= 0 &&
-    currentStageIndex + 1 < STAGE_PUZZLES.length;
+    currentStageIndex >= 0 && currentStageIndex + 1 < allStages.length;
+
+  // Live preview of List<CrosswordWordData> for the auto-assigned stageNumber with user-chosen grid size and word count
+  const previewWordDataList = useMemo(() => {
+    return generateCrosswordWordDataList(nextAutoStageNumber, createGridSize, createTargetWords);
+  }, [nextAutoStageNumber, createGridSize, createTargetWords, dictionaryWordCount]);
+
+  const handleOpenCreateStageModal = () => {
+    setCreateGridSize(15);
+    setCreateTargetWords(20);
+    setIsCreateStageOpen(true);
+    soundManager.playSnapFit();
+  };
+
+  const handleCreateAndRegisterStage = (playImmediately: boolean) => {
+    const wordDataList = generateCrosswordWordDataList(
+      nextAutoStageNumber,
+      createGridSize,
+      createTargetWords
+    );
+    const generatedPuzzle = convertWordDataToPuzzle(
+      nextAutoStageNumber,
+      wordDataList,
+      createGridSize
+    );
+
+    setCustomStages((prev) => {
+      const filtered = prev.filter((p) => p.id !== generatedPuzzle.id);
+      const updated = [...filtered, generatedPuzzle];
+      saveStateToStorage((s) => ({ ...s, customStages: updated }));
+      return updated;
+    });
+    setUnlockedStageIds((prev) =>
+      prev.includes(generatedPuzzle.id) ? prev : [...prev, generatedPuzzle.id]
+    );
+
+    soundManager.playWordComplete();
+    setIsCreateStageOpen(false);
+
+    if (playImmediately) {
+      startPuzzle(generatedPuzzle, true);
+    }
+  };
+
+  const handleConfirmDeleteStage = (stage: CrosswordPuzzle) => {
+    setCustomStages((prev) => {
+      const updated = prev.filter((s) => s.id !== stage.id);
+      saveStateToStorage((s) => ({
+        ...s,
+        customStages: updated,
+        clearedStageIds: s.clearedStageIds.filter((id) => id !== stage.id),
+        startedStageIds: (s.startedStageIds || []).filter((id) => id !== stage.id),
+        unlockedStageIds: (s.unlockedStageIds || []).filter((id) => id !== stage.id),
+        activePuzzle: s.activePuzzle?.puzzleId === stage.id ? null : s.activePuzzle,
+      }));
+      return updated;
+    });
+    setClearedStageIds((prev) => prev.filter((id) => id !== stage.id));
+    setStartedStageIds((prev) => prev.filter((id) => id !== stage.id));
+    setUnlockedStageIds((prev) => prev.filter((id) => id !== stage.id));
+
+    if (currentPuzzle.id === stage.id) {
+      const fallback = STAGE_PUZZLES[0];
+      setCurrentPuzzle(fallback);
+      setGrid(buildCrosswordGrid(fallback));
+      setSolvedWordIds(new Set());
+      setHasSavedActiveGame(false);
+    }
+
+    soundManager.playSnapFit();
+    setStageToDelete(null);
+  };
 
   return (
     <div
@@ -1002,54 +1295,87 @@ export default function App() {
             aria-label="스테이지 목록"
           >
             <div className="grid grid-cols-4 sm:grid-cols-5 gap-3 p-1">
-              {STAGE_PUZZLES.map((stage, idx) => {
-                const isUnlocked = idx <= highestReachedStage;
+              {allStages.map((stage, idx) => {
                 const isCleared = clearedStageIds.includes(stage.id);
-                const isCurrentActive =
-                  hasSavedActiveGame && currentPuzzle.id === stage.id && !isCleared;
+                const hasActiveInput =
+                  hasSavedActiveGame &&
+                  currentPuzzle.id === stage.id &&
+                  grid.some((row) => row.some((c) => c.isPlayable && c.userInput.length > 0));
+                const isStarted =
+                  startedStageIds.includes(stage.id) || hasActiveInput;
+                const isCustom = customStages.some((cs) => cs.id === stage.id);
+                const isCurrentActive = hasActiveInput && !isCleared;
 
                 return (
-                  <button
-                    key={stage.id}
-                    type="button"
-                    disabled={!isUnlocked}
-                    onClick={() => startPuzzle(stage)}
-                    aria-label={`${stage.stageNumber ?? idx + 1}단계 ${
-                      isCleared ? '완료' : isUnlocked ? '시작' : '잠김'
-                    }`}
-                    className={`aspect-square rounded-2xl border-2 flex flex-col items-center justify-center relative font-bold transition-all shadow-sm ${
-                      !isUnlocked
-                        ? isDarkMode
-                          ? 'bg-stone-900/40 border-stone-800 text-stone-600 cursor-not-allowed'
-                          : 'bg-[#E5DEC9]/50 border-[#D8CEBE] text-[#A69B8D] cursor-not-allowed'
-                        : isCleared
-                        ? isDarkMode
-                          ? 'bg-emerald-950/40 border-emerald-600 text-emerald-200 hover:bg-emerald-900/50 active:scale-95'
-                          : 'bg-[#EBF5EF] border-[#2E6F5E] text-[#1E4E42] hover:bg-[#DFEFE6] active:scale-95'
-                        : isDarkMode
-                        ? 'bg-amber-600 border-amber-400 text-stone-950 hover:bg-amber-500 shadow-md active:scale-95'
-                        : 'bg-[#B85D3B] border-[#964728] text-white hover:bg-[#A34E2E] shadow-md active:scale-95'
-                    }`}
-                  >
-                    <span className="text-2xl sm:text-3xl font-extrabold tracking-tight">
-                      {stage.stageNumber ?? idx + 1}
-                    </span>
+                  <div key={stage.id} className="relative aspect-square">
+                    <button
+                      type="button"
+                      onClick={() => startPuzzle(stage)}
+                      aria-label={`${stage.stageNumber ?? idx + 1}단계 ${
+                        isCleared ? '완료' : isStarted ? '진행 중' : '미진행'
+                      }`}
+                      className={`w-full h-full rounded-2xl border-2 flex flex-col items-center justify-center relative font-bold transition-all shadow-sm active:scale-95 ${
+                        isCleared
+                          ? isDarkMode
+                            ? 'bg-emerald-950/60 border-emerald-500 text-emerald-100 hover:bg-emerald-900/60'
+                            : 'bg-[#EBF5EF] border-[#2E6F5E] text-[#1E4E42] hover:bg-[#DFEFE6]'
+                          : isStarted
+                          ? isDarkMode
+                            ? 'bg-amber-600 border-amber-400 text-stone-950 hover:bg-amber-500 shadow-md'
+                            : 'bg-[#B85D3B] border-[#964728] text-white hover:bg-[#A34E2E] shadow-md'
+                          : isDarkMode
+                          ? 'opacity-40 hover:opacity-90 transition-opacity bg-stone-900/60 border-stone-800 text-stone-400 hover:bg-stone-800'
+                          : 'opacity-40 hover:opacity-90 transition-opacity bg-[#EFE9DA]/60 border-[#D5CBB8] text-[#7A6E60] hover:bg-[#EFE9DA]'
+                      }`}
+                    >
+                      <span className="text-2xl sm:text-3xl font-extrabold tracking-tight">
+                        {stage.stageNumber ?? idx + 1}
+                      </span>
 
-                    {/* 상태 표시 아이콘 (완료: 체크, 잠김: 자물쇠, 풀던 중: 점) */}
-                    {isCleared ? (
-                      <div className="absolute top-1.5 right-1.5 w-4 h-4 rounded-full bg-[#2E6F5E] dark:bg-emerald-600 text-white flex items-center justify-center">
-                        <CheckCircle2 className="w-3.5 h-3.5" />
-                      </div>
-                    ) : !isUnlocked ? (
-                      <div className="absolute top-1.5 right-1.5 opacity-40">
-                        <Lock className="w-3.5 h-3.5" />
-                      </div>
-                    ) : isCurrentActive ? (
-                      <div className="absolute bottom-1.5 w-2 h-2 rounded-full bg-amber-200 animate-pulse" />
-                    ) : null}
-                  </button>
+                      {/* 완료 체크 아이콘 (초록색 푼 문제) */}
+                      {isCleared && (
+                        <div className="absolute top-1.5 left-1.5 w-4 h-4 rounded-full bg-[#2E6F5E] dark:bg-emerald-600 text-white flex items-center justify-center">
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                        </div>
+                      )}
+
+                      {/* 풀던 중 표시 점 (주황색 풀던 문제) */}
+                      {isCurrentActive && (
+                        <div className="absolute bottom-1.5 w-2 h-2 rounded-full bg-amber-200 animate-pulse" />
+                      )}
+                    </button>
+
+                    {/* 생성한 스테이지 삭제 버튼 */}
+                    {isCustom && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setStageToDelete(stage);
+                        }}
+                        aria-label={`${stage.stageNumber ?? idx + 1}단계 삭제`}
+                        className="absolute -top-1.5 -right-1.5 w-6 h-6 rounded-full bg-rose-600 hover:bg-rose-500 text-white flex items-center justify-center shadow-md active:scale-90 z-20 transition-transform"
+                      >
+                        <X className="w-3.5 h-3.5 stroke-[2.5]" />
+                      </button>
+                    )}
+                  </div>
                 );
               })}
+
+              {/* 유저가 직접 새 정식 스테이지를 생성해 추가하는 바둑판 타일 */}
+              <button
+                type="button"
+                onClick={handleOpenCreateStageModal}
+                aria-label="새 스테이지 생성"
+                className={`aspect-square rounded-2xl border-2 border-dashed flex flex-col items-center justify-center gap-0.5 font-bold transition-all active:scale-95 ${
+                  isDarkMode
+                    ? 'bg-stone-900/70 border-amber-500/70 text-amber-300 hover:bg-stone-800'
+                    : 'bg-[#EFE9DA]/80 border-[#B85D3B] text-[#9E4726] hover:bg-[#E5DEC9]'
+                }`}
+              >
+                <Plus className="w-7 h-7 stroke-[2.5]" />
+              </button>
             </div>
           </div>
         </main>
@@ -1126,114 +1452,135 @@ export default function App() {
             </div>
           </div>
 
-          {/* 상단 중앙: 십자말풀이 보드 (단계 이름 및 확대 버튼 없음 · 두 손가락 핀치 줌 지원) */}
+          {/* 상단 중앙: 십자말풀이 보드 (단계 이름 및 확대 버튼 없음 · 드래그 이동 및 두 손가락 핀치 줌 지원) */}
           <div
+            ref={boardContainerRef}
             onTouchStart={handleBoardTouchStart}
             onTouchMove={handleBoardTouchMove}
             onTouchEnd={handleBoardTouchEnd}
             onTouchCancel={handleBoardTouchEnd}
+            onMouseDown={handleBoardMouseDown}
+            onMouseMove={handleBoardMouseMove}
+            onMouseUp={handleBoardMouseUp}
+            onMouseLeave={handleBoardMouseUp}
             onWheel={handleBoardWheel}
-            className={`flex-1 min-h-0 rounded-2xl border flex items-center justify-center overflow-hidden touch-none p-2 ${
+            className={`flex-1 min-h-0 rounded-2xl border flex items-center justify-center overflow-hidden touch-none select-none p-1.5 cursor-grab active:cursor-grabbing ${
               isDarkMode
-                ? 'bg-[#171412] border-stone-800'
-                : 'bg-[#E5DEC9] border-[#CFC3AE]'
+                ? 'bg-[#151311] border-stone-800'
+                : 'bg-[#EAE3D2] border-[#D5CBB8]'
             }`}
           >
-            <div
-              data-testid="crossword-grid"
-              style={{
-                transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoomScale})`,
-                transformOrigin: 'center center',
-              }}
-              className="transition-transform duration-75"
-            >
-              <div
-                className="grid gap-0.5 sm:gap-1"
-                style={{
-                  gridTemplateColumns: `repeat(${currentPuzzle.size}, minmax(0, 1fr))`,
-                }}
-              >
-                {grid.map((rowArr, r) =>
-                  rowArr.map((cell, c) => {
-                    const isSelected =
-                      selectedCell.row === r && selectedCell.col === c;
-                    const isInActiveWord = activeWordCoords.some(
-                      (pos) => pos.row === r && pos.col === c
-                    );
+            {(() => {
+              const gapPx = 2;
+              const cellPx = Math.max(
+                42,
+                Math.floor(
+                  (boardBoxSize - gapPx * (currentPuzzle.size - 1)) /
+                    currentPuzzle.size
+                )
+              );
 
-                    const cellSizeClass =
-                      currentPuzzle.size >= 12
-                        ? 'w-6 h-6 sm:w-7 sm:h-7 text-xs sm:text-sm'
-                        : currentPuzzle.size >= 7
-                        ? 'w-9 h-9 sm:w-11 sm:h-11 text-base sm:text-lg'
-                        : 'w-11 h-11 sm:w-13 sm:h-13 text-lg sm:text-2xl';
+              return (
+                <div
+                  data-testid="crossword-grid"
+                  style={{
+                    transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoomScale})`,
+                    transformOrigin: 'center center',
+                  }}
+                  className="transition-transform duration-75"
+                >
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: `repeat(${currentPuzzle.size}, ${cellPx}px)`,
+                      gridTemplateRows: `repeat(${currentPuzzle.size}, ${cellPx}px)`,
+                      gap: `${gapPx}px`,
+                    }}
+                  >
+                    {grid.map((rowArr, r) =>
+                      rowArr.map((cell, c) => {
+                        const isSelected =
+                          selectedCell.row === r && selectedCell.col === c;
+                        const isInActiveWord = activeWordCoords.some(
+                          (pos) => pos.row === r && pos.col === c
+                        );
 
-                    if (!cell.isPlayable) {
-                      return (
-                        <div
-                          key={`${r}-${c}`}
-                          aria-hidden="true"
-                          className={`${cellSizeClass} rounded-lg border ${
-                            isDarkMode
-                              ? 'bg-stone-900/70 border-stone-800/80'
-                              : 'bg-[#D6CCB8]/75 border-[#C8BCA4]'
-                          }`}
-                        />
-                      );
-                    }
+                        if (!cell.isPlayable) {
+                          return (
+                            <div
+                              key={`${r}-${c}`}
+                              aria-hidden="true"
+                              className={`w-full h-full rounded-[6px] ${
+                                isDarkMode
+                                  ? 'bg-stone-900/25'
+                                  : 'bg-[#DFD7C5]/35'
+                              }`}
+                            />
+                          );
+                        }
 
-                    return (
-                      <button
-                        key={`${r}-${c}`}
-                        type="button"
-                        onClick={() => handleCellClick(r, c)}
-                        aria-label={`${r + 1}행 ${c + 1}열 칸 ${
-                          cell.userInput ? cell.userInput : '빈칸'
-                        }`}
-                        className={`relative ${cellSizeClass} rounded-lg border-2 flex items-center justify-center font-bold transition-all ${
-                          isDarkMode ? 'hanji-crosshair-dark' : 'hanji-crosshair-light'
-                        } ${
-                          cell.isWrongAlert
-                            ? isDarkMode
-                              ? 'bg-rose-950/90 border-rose-500 text-rose-200 ring-2 ring-rose-500/60'
-                              : 'bg-[#FDE8E8] border-[#DC2626] text-[#B91C1C] ring-2 ring-[#DC2626]/40'
-                            : cell.isSolvedLocked
-                            ? isDarkMode
-                              ? 'bg-emerald-950/75 border-emerald-500 text-emerald-100'
-                              : 'bg-[#E6F4EE] border-[#2E6F5E] text-[#17493B]'
-                            : isSelected
-                            ? isDarkMode
-                              ? 'bg-amber-900/70 border-amber-400 text-amber-50 ring-2 ring-amber-400'
-                              : 'bg-[#FFF7E2] border-[#B85D3B] text-[#2C2520] ring-2 ring-[#B85D3B]'
-                            : isInActiveWord
-                            ? isDarkMode
-                              ? 'bg-stone-800 border-amber-600/70 text-stone-100'
-                              : 'bg-[#FBF3DF] border-[#CFA97E] text-[#2C2520]'
-                            : isDarkMode
-                            ? 'bg-[#262220] border-stone-600 text-stone-100'
-                            : 'bg-[#FDFBF7] border-[#B8AA93] text-[#2C2520]'
-                        }`}
-                      >
-                        {cell.clueNumber !== undefined && (
-                          <span
-                            className={`absolute top-0.5 left-0.5 text-[7px] sm:text-[8px] font-mono font-bold leading-none ${
-                              isDarkMode ? 'text-amber-300' : 'text-[#8C4A27]'
+                        return (
+                          <button
+                            key={`${r}-${c}`}
+                            type="button"
+                            onClick={() => handleCellClick(r, c)}
+                            aria-label={`${r + 1}행 ${c + 1}열 칸 ${
+                              cell.userInput ? cell.userInput : '빈칸'
+                            }`}
+                            className={`relative w-full h-full rounded-[7px] border-2 flex items-center justify-center font-bold leading-none transition-colors shadow-2xs ${
+                              isDarkMode ? 'hanji-crosshair-dark' : 'hanji-crosshair-light'
+                            } ${
+                              cell.isWrongAlert
+                                ? isDarkMode
+                                  ? 'bg-rose-950/95 border-rose-500 text-rose-200 ring-1 ring-rose-500/70'
+                                  : 'bg-[#FDE8E8] border-[#DC2626] text-[#B91C1C] ring-1 ring-[#DC2626]/50'
+                                : cell.isSolvedLocked
+                                ? isDarkMode
+                                  ? 'bg-emerald-950/85 border-emerald-500 text-emerald-100'
+                                  : 'bg-[#E6F4EE] border-[#2E6F5E] text-[#17493B]'
+                                : isSelected
+                                ? isDarkMode
+                                  ? 'bg-amber-900/80 border-amber-400 text-amber-50 ring-2 ring-amber-400 z-10'
+                                  : 'bg-[#FFF5D6] border-[#B85D3B] text-[#2C2520] ring-2 ring-[#B85D3B] z-10'
+                                : isInActiveWord
+                                ? isDarkMode
+                                  ? 'bg-stone-800 border-amber-500/80 text-stone-100'
+                                  : 'bg-[#FBF1D8] border-[#C99B68] text-[#2C2520]'
+                                : isDarkMode
+                                ? 'bg-[#282421] border-stone-600 text-stone-100'
+                                : 'bg-[#FDFBF7] border-[#B8A990] text-[#2C2520]'
                             }`}
                           >
-                            {cell.clueNumber}
-                          </span>
-                        )}
-                        <span className="z-10">{cell.userInput}</span>
-                      </button>
-                    );
-                  })
-                )}
-              </div>
-            </div>
+                            {cell.clueNumber !== undefined && (
+                              <span
+                                className={`absolute top-0.5 left-1 text-[8.5px] sm:text-[9px] font-mono font-bold leading-none pointer-events-none select-none z-10 ${
+                                  cell.isSolvedLocked
+                                    ? isDarkMode
+                                      ? 'text-emerald-400'
+                                      : 'text-[#2E6F5E]'
+                                    : isDarkMode
+                                    ? 'text-amber-400'
+                                    : 'text-[#8C4A27]'
+                                }`}
+                              >
+                                {cell.clueNumber}
+                              </span>
+                            )}
+                            <span className="text-base sm:text-lg font-black leading-none select-none z-10 pointer-events-none">
+                              {cell.userInput}
+                            </span>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
 
           {/* 하단 반반(50:50) 분할: 왼쪽 = 문장 칸 + 작고 네모난 힌트 버튼 / 오른쪽 = 글씨 적는 칸 */}
-          <div className="h-[225px] sm:h-[245px] grid grid-cols-2 gap-2 shrink-0">
+          <div className="h-[200px] sm:h-[235px] grid grid-cols-2 gap-2 shrink-0">
             {/* 왼쪽 50%: 문장 칸 */}
             <div
               className={`h-full rounded-2xl border p-2.5 flex flex-col justify-between overflow-hidden ${
@@ -1336,6 +1683,8 @@ export default function App() {
                     grid[selectedCell.row]?.[selectedCell.col]?.userInput || ''
                   }
                   isDarkMode={isDarkMode}
+                  autoCommitDelaySec={autoCommitDelaySec}
+                  contextSyllables={currentPuzzleSyllables}
                   onSelectCandidate={handleEnterCharacter}
                   onClearCell={handleClearCurrentCell}
                 />
@@ -1441,6 +1790,247 @@ export default function App() {
         </div>
       )}
 
+      {/* 스테이지 직접 생성 모달 (100% 오프라인 wordcross_words-v2.json 기반 15x15 생성기) */}
+      {isCreateStageOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 overflow-hidden"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="create-stage-modal-title"
+        >
+          <div
+            className={`w-full max-w-sm rounded-3xl border p-5 shadow-2xl transition-colors ${
+              isDarkMode
+                ? 'bg-stone-900 border-stone-700 text-stone-100'
+                : 'bg-[#FAF5E8] border-[#D8CEBE] text-[#2C2520]'
+            }`}
+          >
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2 font-bold text-base">
+                <Plus className="w-5 h-5 text-[#B85D3B] dark:text-amber-400" />
+                <h2 id="create-stage-modal-title">새 스테이지 생성</h2>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setIsCreateStageOpen(false)}
+                aria-label="스테이지 생성 모달 닫기"
+                className={`w-8 h-8 rounded-lg flex items-center justify-center ${
+                  isDarkMode
+                    ? 'bg-stone-800 text-stone-300'
+                    : 'bg-[#EAE2D0] text-[#4A3F35]'
+                }`}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3 mb-4">
+              {/* 자동 지정되는 스테이지 번호 */}
+              <div
+                className={`p-3 rounded-2xl border flex items-center justify-between ${
+                  isDarkMode
+                    ? 'bg-stone-950/80 border-stone-800'
+                    : 'bg-[#FDFBF7] border-[#D5CBB8]'
+                }`}
+              >
+                <span className="text-xs font-bold opacity-80">스테이지 번호</span>
+                <span className="font-mono text-base font-extrabold text-[#B85D3B] dark:text-amber-400">
+                  {nextAutoStageNumber}단계
+                </span>
+              </div>
+
+              {/* 격자 크기 조절 (10~15) */}
+              <div
+                className={`p-3 rounded-2xl border flex items-center justify-between ${
+                  isDarkMode
+                    ? 'bg-stone-950/80 border-stone-800'
+                    : 'bg-[#FDFBF7] border-[#D5CBB8]'
+                }`}
+              >
+                <div>
+                  <div className="text-xs font-bold opacity-80">격자 크기</div>
+                  <div className="text-[11px] opacity-60">가로 × 세로 칸 수</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setCreateGridSize((s) => Math.max(10, s - 1))}
+                    disabled={createGridSize <= 10}
+                    aria-label="격자 크기 1 감소"
+                    className={`w-9 h-9 rounded-xl border font-black text-lg flex items-center justify-center transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
+                      isDarkMode
+                        ? 'bg-stone-800 border-stone-600 text-stone-100 hover:bg-stone-700 active:scale-95'
+                        : 'bg-[#F3ECE0] border-[#D5CBB8] text-[#2C2520] hover:bg-[#EAE2D0] active:scale-95'
+                    }`}
+                  >
+                    -
+                  </button>
+                  <span className="w-14 text-center font-bold text-sm font-mono tabular-nums">
+                    {createGridSize} × {createGridSize}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setCreateGridSize((s) => Math.min(15, s + 1))}
+                    disabled={createGridSize >= 15}
+                    aria-label="격자 크기 1 증가"
+                    className={`w-9 h-9 rounded-xl border font-black text-lg flex items-center justify-center transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
+                      isDarkMode
+                        ? 'bg-stone-800 border-stone-600 text-stone-100 hover:bg-stone-700 active:scale-95'
+                        : 'bg-[#F3ECE0] border-[#D5CBB8] text-[#2C2520] hover:bg-[#EAE2D0] active:scale-95'
+                    }`}
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+
+              {/* 단어 수 조절 (10~25) */}
+              <div
+                className={`p-3 rounded-2xl border flex items-center justify-between ${
+                  isDarkMode
+                    ? 'bg-stone-950/80 border-stone-800'
+                    : 'bg-[#FDFBF7] border-[#D5CBB8]'
+                }`}
+              >
+                <div>
+                  <div className="text-xs font-bold opacity-80">단어 수</div>
+                  <div className="text-[11px] opacity-60">스테이지 당 목표 단어</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setCreateTargetWords((w) => Math.max(10, w - 1))}
+                    disabled={createTargetWords <= 10}
+                    aria-label="단어 수 1 감소"
+                    className={`w-9 h-9 rounded-xl border font-black text-lg flex items-center justify-center transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
+                      isDarkMode
+                        ? 'bg-stone-800 border-stone-600 text-stone-100 hover:bg-stone-700 active:scale-95'
+                        : 'bg-[#F3ECE0] border-[#D5CBB8] text-[#2C2520] hover:bg-[#EAE2D0] active:scale-95'
+                    }`}
+                  >
+                    -
+                  </button>
+                  <span className="w-14 text-center font-bold text-sm font-mono tabular-nums">
+                    {createTargetWords}개
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setCreateTargetWords((w) => Math.min(25, w + 1))}
+                    disabled={createTargetWords >= 25}
+                    aria-label="단어 수 1 증가"
+                    className={`w-9 h-9 rounded-xl border font-black text-lg flex items-center justify-center transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
+                      isDarkMode
+                        ? 'bg-stone-800 border-stone-600 text-stone-100 hover:bg-stone-700 active:scale-95'
+                        : 'bg-[#F3ECE0] border-[#D5CBB8] text-[#2C2520] hover:bg-[#EAE2D0] active:scale-95'
+                    }`}
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+
+              {/* 생성될 격자 데이터 요약 */}
+              <div
+                className={`rounded-2xl border p-3 text-xs space-y-1.5 ${
+                  isDarkMode
+                    ? 'bg-stone-950/80 border-stone-800 text-stone-300'
+                    : 'bg-[#EFE9DA] border-[#D8CEBE] text-[#4A3F35]'
+                }`}
+              >
+                <div className="flex items-center justify-between font-bold">
+                  <span>격자 크기</span>
+                  <span className="font-mono">{createGridSize} × {createGridSize}</span>
+                </div>
+                <div className="flex items-center justify-between font-bold">
+                  <span>배치된 교차 단어 수</span>
+                  <span className="font-mono text-[#B85D3B] dark:text-amber-400">
+                    총 {previewWordDataList.length}개 (가로{' '}
+                    {previewWordDataList.filter((w) => w.direction === 'Horizontal').length}{' '}
+                    / 세로{' '}
+                    {previewWordDataList.filter((w) => w.direction === 'Vertical').length})
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => handleCreateAndRegisterStage(false)}
+                className={`min-h-[44px] rounded-xl border font-bold text-sm ${
+                  isDarkMode
+                    ? 'bg-stone-800 border-stone-700 text-stone-100 hover:bg-stone-700'
+                    : 'bg-[#EFE9DA] border-[#D5CBB8] text-[#2C2520] hover:bg-[#E4DCC8]'
+                }`}
+              >
+                목록에 추가
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleCreateAndRegisterStage(true)}
+                className={`min-h-[44px] rounded-xl font-bold text-sm flex items-center justify-center gap-1 ${
+                  isDarkMode
+                    ? 'bg-amber-600 text-stone-950 hover:bg-amber-500'
+                    : 'bg-[#B85D3B] text-white hover:bg-[#9E4B2C]'
+                }`}
+              >
+                <span>추가 후 시작</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 생성한 스테이지 삭제 확인 모달 */}
+      {stageToDelete !== null && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 overflow-hidden"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-stage-modal-title"
+        >
+          <div
+            className={`w-full max-w-xs rounded-3xl border p-5 shadow-2xl text-center transition-colors ${
+              isDarkMode
+                ? 'bg-stone-900 border-stone-700 text-stone-100'
+                : 'bg-[#F8F3E6] border-[#D8CEBE] text-[#2C2520]'
+            }`}
+          >
+            <h3 id="delete-stage-modal-title" className="text-base font-bold mb-2">
+              스테이지 삭제
+            </h3>
+            <p className="text-sm opacity-80 mb-5 break-keep">
+              <strong className="text-rose-600 dark:text-rose-400">
+                {stageToDelete.stageNumber ?? ''}단계
+              </strong>{' '}
+              스테이지를 정말 삭제하시겠습니까? 삭제된 스테이지는 복구할 수 없습니다.
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setStageToDelete(null)}
+                className={`min-h-[44px] rounded-xl border font-bold text-sm ${
+                  isDarkMode
+                    ? 'bg-stone-800 border-stone-700 text-stone-200 hover:bg-stone-700'
+                    : 'bg-[#EFE9DA] border-[#D5CBB8] text-[#2C2520] hover:bg-[#E4DCC8]'
+                }`}
+              >
+                취소
+              </button>
+              <button
+                type="button"
+                onClick={() => handleConfirmDeleteStage(stageToDelete)}
+                className="min-h-[44px] rounded-xl font-bold text-sm bg-rose-600 text-white hover:bg-rose-700 active:scale-95 shadow-md"
+              >
+                삭제
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 클리어 모달 */}
       <StageClearModal
         isOpen={screen === 'gameover'}
@@ -1452,7 +2042,7 @@ export default function App() {
         hasNextStage={hasNextStage}
         onNextStage={() => {
           if (hasNextStage) {
-            startPuzzle(STAGE_PUZZLES[currentStageIndex + 1], true);
+            startPuzzle(allStages[currentStageIndex + 1], true);
           }
         }}
         onReplay={() => startPuzzle(currentPuzzle, true)}
@@ -1463,10 +2053,21 @@ export default function App() {
       <SettingsModal
         isOpen={isSettingsOpen}
         inputMode={inputMode}
+        autoCommitDelaySec={autoCommitDelaySec}
         bgmEnabled={bgmEnabled}
         sfxEnabled={sfxEnabled}
         isDarkMode={isDarkMode}
         onChangeInputMode={(mode) => setInputMode(mode)}
+        onChangeAutoCommitDelay={(sec) => {
+          setAutoCommitDelaySec(sec);
+          saveStateToStorage((prev) => ({
+            ...prev,
+            settings: {
+              ...prev.settings,
+              autoCommitDelaySec: sec,
+            },
+          }));
+        }}
         onToggleBgm={() => setBgmEnabled((b) => !b)}
         onToggleSfx={() => setSfxEnabled((s) => !s)}
         onToggleDarkMode={() => setIsDarkMode((d) => !d)}

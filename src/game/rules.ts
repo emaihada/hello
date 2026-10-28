@@ -2,7 +2,7 @@ import { STAGE_PUZZLES, type CrosswordPuzzle, type WordClue } from './puzzles.ts
 
 export const HINT_LETTER_COST = 30;
 export const HINT_WORD_COST = 80;
-export const INITIAL_CURRENCY = 120;
+export const INITIAL_CURRENCY = 300;
 
 export interface GridCell {
   row: number;
@@ -462,7 +462,138 @@ function transformStrokes(
 /**
  * Generates canonical normalized [0,1]x[0,1] strokes for any Hangul syllable
  */
-export function buildCanonicalSyllableStrokes(syllable: string): Stroke[] {
+const CHOSEONG_VARIANTS: Record<number, Stroke[][]> = {
+  0: [
+    [[{ x: 0.1, y: 0.2 }, { x: 0.85, y: 0.2 }, { x: 0.85, y: 0.85 }]],
+    [[{ x: 0.1, y: 0.2 }, { x: 0.85, y: 0.2 }], [{ x: 0.85, y: 0.2 }, { x: 0.85, y: 0.85 }]],
+  ], // ㄱ: 1-stroke corner or 2 strokes
+  2: [
+    [[{ x: 0.15, y: 0.15 }, { x: 0.15, y: 0.85 }, { x: 0.9, y: 0.85 }]],
+    [[{ x: 0.15, y: 0.15 }, { x: 0.15, y: 0.85 }], [{ x: 0.15, y: 0.85 }, { x: 0.9, y: 0.85 }]],
+  ], // ㄴ: 1-stroke corner or 2 strokes
+  3: [
+    [
+      [{ x: 0.15, y: 0.18 }, { x: 0.88, y: 0.18 }],
+      [{ x: 0.15, y: 0.18 }, { x: 0.15, y: 0.85 }, { x: 0.9, y: 0.85 }],
+    ],
+    [[{ x: 0.88, y: 0.18 }, { x: 0.15, y: 0.18 }, { x: 0.15, y: 0.85 }, { x: 0.9, y: 0.85 }]],
+  ], // ㄷ: 2 strokes or 1-stroke bracket
+  5: [
+    [
+      [{ x: 0.12, y: 0.15 }, { x: 0.85, y: 0.15 }, { x: 0.85, y: 0.5 }],
+      [{ x: 0.12, y: 0.5 }, { x: 0.85, y: 0.5 }],
+      [{ x: 0.12, y: 0.5 }, { x: 0.12, y: 0.88 }, { x: 0.88, y: 0.88 }],
+    ],
+    [
+      [
+        { x: 0.12, y: 0.18 },
+        { x: 0.85, y: 0.18 },
+        { x: 0.85, y: 0.5 },
+        { x: 0.15, y: 0.5 },
+        { x: 0.15, y: 0.88 },
+        { x: 0.88, y: 0.88 },
+      ],
+    ],
+  ], // ㄹ: 3 strokes standard or 1-stroke cursive 2/Z
+  6: [
+    [
+      [{ x: 0.15, y: 0.18 }, { x: 0.15, y: 0.85 }],
+      [{ x: 0.15, y: 0.18 }, { x: 0.85, y: 0.18 }, { x: 0.85, y: 0.85 }],
+      [{ x: 0.15, y: 0.85 }, { x: 0.85, y: 0.85 }],
+    ],
+    [
+      [
+        { x: 0.15, y: 0.18 },
+        { x: 0.85, y: 0.18 },
+        { x: 0.85, y: 0.85 },
+        { x: 0.15, y: 0.85 },
+        { x: 0.15, y: 0.18 },
+      ],
+    ],
+  ], // ㅁ: 3 strokes standard or 1-stroke continuous box
+  7: [
+    [
+      [{ x: 0.18, y: 0.15 }, { x: 0.18, y: 0.88 }],
+      [{ x: 0.82, y: 0.15 }, { x: 0.82, y: 0.88 }],
+      [{ x: 0.18, y: 0.5 }, { x: 0.82, y: 0.5 }],
+      [{ x: 0.18, y: 0.88 }, { x: 0.82, y: 0.88 }],
+    ],
+    [
+      [{ x: 0.18, y: 0.15 }, { x: 0.18, y: 0.88 }, { x: 0.82, y: 0.88 }, { x: 0.82, y: 0.15 }],
+      [{ x: 0.18, y: 0.5 }, { x: 0.82, y: 0.5 }],
+    ],
+  ], // ㅂ: 4 strokes standard or 2 strokes (U + bar)
+  9: [
+    [
+      [{ x: 0.5, y: 0.15 }, { x: 0.12, y: 0.85 }],
+      [{ x: 0.5, y: 0.35 }, { x: 0.88, y: 0.85 }],
+    ],
+    [[{ x: 0.15, y: 0.85 }, { x: 0.5, y: 0.15 }, { x: 0.85, y: 0.85 }]],
+  ], // ㅅ: 2 strokes standard or 1-stroke inverted V
+  11: [
+    [
+      [
+        { x: 0.5, y: 0.15 },
+        { x: 0.15, y: 0.5 },
+        { x: 0.5, y: 0.85 },
+        { x: 0.85, y: 0.5 },
+        { x: 0.5, y: 0.15 },
+      ],
+    ],
+    [
+      [
+        { x: 0.5, y: 0.15 },
+        { x: 0.85, y: 0.5 },
+        { x: 0.5, y: 0.85 },
+        { x: 0.15, y: 0.5 },
+        { x: 0.5, y: 0.15 },
+      ],
+    ],
+  ], // ㅇ: clockwise and counter-clockwise
+  12: [
+    [
+      [{ x: 0.15, y: 0.18 }, { x: 0.85, y: 0.18 }],
+      [{ x: 0.5, y: 0.18 }, { x: 0.12, y: 0.88 }],
+      [{ x: 0.5, y: 0.42 }, { x: 0.88, y: 0.88 }],
+    ],
+    [
+      [{ x: 0.15, y: 0.18 }, { x: 0.85, y: 0.18 }, { x: 0.25, y: 0.88 }],
+      [{ x: 0.48, y: 0.5 }, { x: 0.88, y: 0.88 }],
+    ],
+  ], // ㅈ: 3 strokes standard or 2 strokes cursive
+  18: [
+    [
+      [{ x: 0.35, y: 0.08 }, { x: 0.65, y: 0.08 }],
+      [{ x: 0.12, y: 0.26 }, { x: 0.88, y: 0.26 }],
+      [
+        { x: 0.5, y: 0.38 },
+        { x: 0.2, y: 0.64 },
+        { x: 0.5, y: 0.9 },
+        { x: 0.8, y: 0.64 },
+        { x: 0.5, y: 0.38 },
+      ],
+    ],
+    [
+      [{ x: 0.15, y: 0.22 }, { x: 0.85, y: 0.22 }],
+      [
+        { x: 0.5, y: 0.38 },
+        { x: 0.2, y: 0.64 },
+        { x: 0.5, y: 0.9 },
+        { x: 0.8, y: 0.64 },
+        { x: 0.5, y: 0.38 },
+      ],
+    ],
+  ], // ㅎ: 3 strokes or 2 strokes
+};
+
+/**
+ * Generates canonical normalized [0,1]x[0,1] strokes for any Hangul syllable.
+ * variantIndex: 0 = textbook strokes, 1 = continuous / cursive writing variant.
+ */
+export function buildCanonicalSyllableStrokes(
+  syllable: string,
+  variantIndex: number = 0
+): Stroke[] {
   const code = syllable.charCodeAt(0) - 0xac00;
   if (code < 0 || code > 11171) return [];
 
@@ -470,10 +601,21 @@ export function buildCanonicalSyllableStrokes(syllable: string): Stroke[] {
   const jungIdx = Math.floor((code % (21 * 28)) / 28);
   const jongIdx = code % 28;
 
-  const choTemplate = CHOSEONG_STROKES[choIdx] || CHOSEONG_STROKES[0];
+  const choVariants = CHOSEONG_VARIANTS[choIdx];
+  const choTemplate =
+    variantIndex > 0 && choVariants && choVariants[variantIndex]
+      ? choVariants[variantIndex]
+      : CHOSEONG_STROKES[choIdx] || CHOSEONG_STROKES[0];
+
   const jungTemplate = JUNGSEONG_STROKES[jungIdx] || JUNGSEONG_STROKES[0];
   const jongChoIdx = JONGSEONG_TO_CHOSEONG[jongIdx];
-  const jongTemplate = jongChoIdx !== undefined ? CHOSEONG_STROKES[jongChoIdx] : null;
+  const jongVariants = jongChoIdx !== undefined ? CHOSEONG_VARIANTS[jongChoIdx] : undefined;
+  const jongTemplate =
+    jongChoIdx !== undefined
+      ? variantIndex > 0 && jongVariants && jongVariants[variantIndex]
+        ? jongVariants[variantIndex]
+        : CHOSEONG_STROKES[jongChoIdx]
+      : null;
 
   const vType = getVowelType(jungIdx);
   const hasBatchim = jongTemplate !== null;
@@ -523,7 +665,7 @@ interface StrokeDescriptor {
   strokeCount: number;
   totalLength: number;
   samples: OrientedSample[];
-  densityGrid: number[]; // 6x6 = 36 cells
+  densityGrid: number[]; // 8x8 = 64 cells with Gaussian blur
   horizGrid: number[];   // 4x4 = 16 cells
   vertGrid: number[];    // 4x4 = 16 cells
   diagGrid: number[];    // 4x4 = 16 cells
@@ -531,6 +673,7 @@ interface StrokeDescriptor {
   bottomLoop: number;
   rightVertEnergy: number;
   bottomHorizEnergy: number;
+  bottomInkRatio: number;
 }
 
 function normalizeStrokesToUnitBox(strokes: Stroke[]): Stroke[] {
@@ -569,19 +712,31 @@ function normalizeStrokesToUnitBox(strokes: Stroke[]): Stroke[] {
   );
 }
 
-function extractDescriptor(rawStrokes: Stroke[]): StrokeDescriptor {
+export function extractDescriptor(rawStrokes: Stroke[]): StrokeDescriptor {
   const norm = normalizeStrokesToUnitBox(rawStrokes);
-  const densityGrid = new Array(36).fill(0);
-  const horizGrid = new Array(16).fill(0);
-  const vertGrid = new Array(16).fill(0);
-  const diagGrid = new Array(16).fill(0);
-  const samples: OrientedSample[] = [];
+  const densityGrid = new Array(64).fill(0); // 8x8 grid
+  const horizGrid = new Array(16).fill(0);   // 4x4
+  const vertGrid = new Array(16).fill(0);    // 4x4
+  const diagGrid = new Array(16).fill(0);    // 4x4
 
   let topLoop = 0;
   let bottomLoop = 0;
   let rightVertEnergy = 0;
   let bottomHorizEnergy = 0;
+  let bottomInkLength = 0;
   let totalLen = 0.001;
+
+  interface Segment {
+    p0: StrokePoint;
+    p1: StrokePoint;
+    dx: number;
+    dy: number;
+    len: number;
+    absDx: number;
+    absDy: number;
+  }
+
+  const allSegments: Segment[] = [];
 
   for (const stroke of norm) {
     if (stroke.length === 0) continue;
@@ -597,7 +752,7 @@ function extractDescriptor(rawStrokes: Stroke[]): StrokeDescriptor {
       stroke[stroke.length - 1].x - stroke[0].x,
       stroke[stroke.length - 1].y - stroke[0].y
     );
-    if (strokeLen > 0.45 && endDist < strokeLen * 0.38) {
+    if (strokeLen > 0.35 && endDist < strokeLen * 0.45) {
       if (meanY < 0.58) topLoop += 1;
       else bottomLoop += 1;
     }
@@ -608,53 +763,93 @@ function extractDescriptor(rawStrokes: Stroke[]): StrokeDescriptor {
       const dx = p1.x - p0.x;
       const dy = p1.y - p0.y;
       const segLen = Math.hypot(dx, dy);
-      if (segLen < 0.001) continue;
+      if (segLen < 0.0005) continue;
 
       totalLen += segLen;
       const absDx = Math.abs(dx) / segLen;
       const absDy = Math.abs(dy) / segLen;
 
-      // Sample every ~0.065 unit length for 4D oriented Chamfer point cloud
-      const sampleSteps = Math.max(1, Math.ceil(segLen / 0.065));
-      for (let st = 0; st < sampleSteps; st++) {
-        const t = (st + 0.5) / sampleSteps;
-        samples.push({
-          x: p0.x + dx * t,
-          y: p0.y + dy * t,
-          absDx,
-          absDy,
-        });
-      }
+      allSegments.push({ p0, p1, dx, dy, len: segLen, absDx, absDy });
 
-      const steps = Math.max(2, Math.ceil(segLen / 0.04));
+      const midY = (p0.y + p1.y) * 0.5;
+      const midX = (p0.x + p1.x) * 0.5;
+      if (midY > 0.62) bottomInkLength += segLen;
+
+      // 8x8 Density Rasterization with smooth 3x3 kernel
+      const steps = Math.max(2, Math.ceil(segLen / 0.03));
       for (let st = 0; st <= steps; st++) {
         const t = st / steps;
         const x = p0.x + dx * t;
         const y = p0.y + dy * t;
 
-        const gx = Math.min(5, Math.max(0, Math.floor(x * 6)));
-        const gy = Math.min(5, Math.max(0, Math.floor(y * 6)));
+        const gx = Math.min(7, Math.max(0, Math.floor(x * 8)));
+        const gy = Math.min(7, Math.max(0, Math.floor(y * 8)));
         const w = segLen / (steps + 1);
-        densityGrid[gy * 6 + gx] += w;
-        if (gx > 0) densityGrid[gy * 6 + (gx - 1)] += w * 0.3;
-        if (gx < 5) densityGrid[gy * 6 + (gx + 1)] += w * 0.3;
-        if (gy > 0) densityGrid[(gy - 1) * 6 + gx] += w * 0.3;
-        if (gy < 5) densityGrid[(gy + 1) * 6 + gx] += w * 0.3;
 
+        densityGrid[gy * 8 + gx] += w;
+        if (gx > 0) densityGrid[gy * 8 + (gx - 1)] += w * 0.35;
+        if (gx < 7) densityGrid[gy * 8 + (gx + 1)] += w * 0.35;
+        if (gy > 0) densityGrid[(gy - 1) * 8 + gx] += w * 0.35;
+        if (gy < 7) densityGrid[(gy + 1) * 8 + gx] += w * 0.35;
+
+        // 4x4 Directional Grids with smooth neighbor kernel to prevent boundary discretization
         const qx = Math.min(3, Math.max(0, Math.floor(x * 4)));
         const qy = Math.min(3, Math.max(0, Math.floor(y * 4)));
         const qIdx = qy * 4 + qx;
 
-        if (absDx > absDy * 1.35) {
-          horizGrid[qIdx] += w;
+        const addSmoothDirection = (grid: number[]) => {
+          grid[qIdx] += w;
+          if (qx > 0) grid[qy * 4 + (qx - 1)] += w * 0.35;
+          if (qx < 3) grid[qy * 4 + (qx + 1)] += w * 0.35;
+          if (qy > 0) grid[(qy - 1) * 4 + qx] += w * 0.35;
+          if (qy < 3) grid[(qy + 1) * 4 + qx] += w * 0.35;
+        };
+
+        if (absDx > absDy * 1.25) {
+          addSmoothDirection(horizGrid);
           if (y > 0.45) bottomHorizEnergy += w;
-        } else if (absDy > absDx * 1.35) {
-          vertGrid[qIdx] += w;
+        } else if (absDy > absDx * 1.25) {
+          addSmoothDirection(vertGrid);
           if (x > 0.5) rightVertEnergy += w;
         } else {
-          diagGrid[qIdx] += w;
+          addSmoothDirection(diagGrid);
         }
       }
+    }
+  }
+
+  // Arc-length uniform sampling: sample exactly 48 equidistant points along the entire drawn path.
+  // This is completely invariant to drawing speed, stroke break points, or stroke order!
+  const TARGET_SAMPLE_COUNT = 48;
+  const samples: OrientedSample[] = [];
+
+  if (allSegments.length > 0) {
+    let accumulated = 0;
+    let segIdx = 0;
+    let currentSegOffset = 0;
+
+    for (let sIdx = 0; sIdx < TARGET_SAMPLE_COUNT; sIdx++) {
+      const targetDist = ((sIdx + 0.5) / TARGET_SAMPLE_COUNT) * totalLen;
+
+      while (
+        segIdx < allSegments.length - 1 &&
+        accumulated + (allSegments[segIdx].len - currentSegOffset) < targetDist
+      ) {
+        accumulated += allSegments[segIdx].len - currentSegOffset;
+        segIdx++;
+        currentSegOffset = 0;
+      }
+
+      const curSeg = allSegments[segIdx];
+      const remainingDist = Math.max(0, targetDist - accumulated);
+      const segT = curSeg.len > 0 ? Math.min(1, (currentSegOffset + remainingDist) / curSeg.len) : 0;
+
+      samples.push({
+        x: curSeg.p0.x + curSeg.dx * segT,
+        y: curSeg.p0.y + curSeg.dy * segT,
+        absDx: curSeg.absDx,
+        absDy: curSeg.absDy,
+      });
     }
   }
 
@@ -675,6 +870,7 @@ function extractDescriptor(rawStrokes: Stroke[]): StrokeDescriptor {
     bottomLoop: Math.min(1, bottomLoop),
     rightVertEnergy: rightVertEnergy / totalLen,
     bottomHorizEnergy: bottomHorizEnergy / totalLen,
+    bottomInkRatio: bottomInkLength / totalLen,
   };
 }
 
@@ -685,10 +881,10 @@ function dotProduct(a: number[], b: number[]): number {
 }
 
 /**
- * Computes bidirectional 4D oriented Chamfer distance between two point clouds
- * in (x, y, absDx, absDy) space. Smaller distance = closer geometric & directional match.
+ * Computes bidirectional 4D oriented Chamfer distance between two point clouds.
+ * Invariant to stroke order, point sequence, and stroke count.
  */
-function computeOrientedChamferDistance(
+export function computeOrientedChamferDistance(
   a: OrientedSample[],
   b: OrientedSample[]
 ): number {
@@ -779,13 +975,15 @@ const COMMON_EXTRA_SYLLABLES = [
 interface SyllableTemplateEntry {
   char: string;
   isPuzzleVocab: boolean;
+  hasBatchim: boolean;
+  vowelType: 'right' | 'bottom' | 'mixed';
   canonicalStrokes: Stroke[];
-  fullDesc: StrokeDescriptor;
+  descriptors: StrokeDescriptor[];
 }
 
 let cachedTemplates: SyllableTemplateEntry[] | null = null;
 
-function getSyllableTemplates(): SyllableTemplateEntry[] {
+export function getSyllableTemplates(): SyllableTemplateEntry[] {
   if (cachedTemplates) return cachedTemplates;
 
   const puzzleChars = new Set<string>();
@@ -799,13 +997,29 @@ function getSyllableTemplates(): SyllableTemplateEntry[] {
   const entries: SyllableTemplateEntry[] = [];
 
   for (const ch of allChars) {
-    const canonicalStrokes = buildCanonicalSyllableStrokes(ch);
-    if (canonicalStrokes.length === 0) continue;
+    const v0 = buildCanonicalSyllableStrokes(ch, 0);
+    if (v0.length === 0) continue;
+
+    const code = ch.charCodeAt(0) - 0xac00;
+    const jungIdx = Math.floor((code % (21 * 28)) / 28);
+    const jongIdx = code % 28;
+
+    const desc0 = extractDescriptor(v0);
+    const descriptors = [desc0];
+
+    // Cursive / connected stroke variant (e.g. 1-stroke ㅁ, 1-stroke ㄹ, 2-stroke ㅎ)
+    const v1 = buildCanonicalSyllableStrokes(ch, 1);
+    if (v1.length > 0 && v1.length !== v0.length) {
+      descriptors.push(extractDescriptor(v1));
+    }
+
     entries.push({
       char: ch,
       isPuzzleVocab: puzzleChars.has(ch),
-      canonicalStrokes,
-      fullDesc: extractDescriptor(canonicalStrokes),
+      hasBatchim: jongIdx !== 0,
+      vowelType: getVowelType(jungIdx),
+      canonicalStrokes: v0,
+      descriptors,
     });
   }
 
@@ -814,12 +1028,15 @@ function getSyllableTemplates(): SyllableTemplateEntry[] {
 }
 
 /**
- * Pure Hangul Handwriting Recognizer (#1):
- * Takes ONLY the user's drawn `strokes` (never knows the target cell answer!).
- * Computes 4D oriented Chamfer point-cloud similarity, spatial density, and directional
- * field correlation against Hangul syllable templates and returns the top 5 candidates.
+ * Enhanced Hangul Handwriting Recognizer:
+ * Completely stroke-order invariant and stroke-count resilient.
+ * Analyzes 4D oriented Chamfer point clouds, 8x8 smoothed 2D density rasterization,
+ * directional energy fields, and structural Jamo topology.
  */
-export function recognizeHandwritingCandidates(strokes: Stroke[]): string[] {
+export function recognizeHandwritingCandidates(
+  strokes: Stroke[],
+  contextSyllables?: string[]
+): string[] {
   if (!strokes || strokes.length === 0) {
     return [];
   }
@@ -835,57 +1052,76 @@ export function recognizeHandwritingCandidates(strokes: Stroke[]): string[] {
   const scored: Array<{ char: string; score: number }> = [];
 
   for (const entry of templates) {
-    const full = entry.fullDesc;
+    let bestVariantScore = -Infinity;
 
-    // 1. 4D Oriented Chamfer Similarity (position x, y + unsigned orientation |dx|, |dy|)
-    const chamferDist = computeOrientedChamferDistance(userDesc.samples, full.samples);
-    const chamferSim = Math.max(0, 1 - chamferDist * 2.2);
+    for (const full of entry.descriptors) {
+      // 1. 4D Oriented Chamfer Similarity (stroke-order and drawing-speed invariant)
+      const chamferDist = computeOrientedChamferDistance(userDesc.samples, full.samples);
+      const chamferSim = Math.max(0, 1 - chamferDist * 2.25);
 
-    // 2. Spatial density correlation (6x6 smoothed grid)
-    const densitySim = dotProduct(userDesc.densityGrid, full.densityGrid);
+      // 2. 8x8 Spatial density correlation (stroke-order and stroke-count invariant)
+      const densitySim = dotProduct(userDesc.densityGrid, full.densityGrid);
 
-    // 3. Directional energy correlation (Horizontal, Vertical, Diagonal 4x4 grids)
-    const horizSim = dotProduct(userDesc.horizGrid, full.horizGrid);
-    const vertSim = dotProduct(userDesc.vertGrid, full.vertGrid);
-    const diagSim = dotProduct(userDesc.diagGrid, full.diagGrid);
-    const dirSim = horizSim * 0.38 + vertSim * 0.38 + diagSim * 0.24;
+      // 3. Directional energy correlation (Horizontal, Vertical, Diagonal 4x4 grids)
+      const horizSim = dotProduct(userDesc.horizGrid, full.horizGrid);
+      const vertSim = dotProduct(userDesc.vertGrid, full.vertGrid);
+      const diagSim = dotProduct(userDesc.diagGrid, full.diagGrid);
+      const dirSim = horizSim * 0.38 + vertSim * 0.38 + diagSim * 0.24;
 
-    // 4. Structural vowel topology match & total ink length ratio
-    const topologyDiff =
-      Math.abs(userDesc.rightVertEnergy - full.rightVertEnergy) +
-      Math.abs(userDesc.bottomHorizEnergy - full.bottomHorizEnergy);
-    const lengthRatioDiff =
-      Math.abs(userDesc.totalLength - full.totalLength) /
-      Math.max(userDesc.totalLength, full.totalLength, 1);
+      // 4. Structural topology match & length ratio
+      const topologyDiff =
+        Math.abs(userDesc.rightVertEnergy - full.rightVertEnergy) +
+        Math.abs(userDesc.bottomHorizEnergy - full.bottomHorizEnergy);
+      const lengthRatioDiff =
+        Math.abs(userDesc.totalLength - full.totalLength) /
+        Math.max(userDesc.totalLength, full.totalLength, 1);
 
-    // 5. Loop / circle match (ㅇ, ㅎ)
-    const loopDiff =
-      Math.abs(userDesc.topLoop - full.topLoop) * 0.25 +
-      Math.abs(userDesc.bottomLoop - full.bottomLoop) * 0.25;
+      // 5. Loop / circle detection (ㅇ, ㅎ)
+      const loopDiff =
+        Math.abs(userDesc.topLoop - full.topLoop) * 0.2 +
+        Math.abs(userDesc.bottomLoop - full.bottomLoop) * 0.2;
 
-    // 6. Stroke count compatibility
-    const expectedStrokes = entry.canonicalStrokes.length;
-    const strokeDiff = Math.abs(userStrokeCount - expectedStrokes);
-    const strokePenalty =
-      strokeDiff === 0
-        ? 0
-        : strokeDiff === 1
-        ? 0.08
-        : strokeDiff === 2
-        ? 0.18
-        : 0.12 * strokeDiff;
+      // 6. Gentle stroke count penalty (never suppresses valid characters written with fewer/more strokes)
+      const expectedStrokes = full.strokeCount;
+      const strokeDiff = Math.abs(userStrokeCount - expectedStrokes);
+      const strokePenalty = Math.min(0.04, strokeDiff * 0.005);
 
-    const totalScore =
-      chamferSim * 0.55 +
-      densitySim * 0.25 +
-      dirSim * 0.25 -
-      topologyDiff * 0.15 -
-      lengthRatioDiff * 0.18 -
-      loopDiff -
-      strokePenalty +
-      (entry.isPuzzleVocab ? 0.025 : 0);
+      // 7. Structural bottom ink consistency against template
+      const bottomInkDiff = Math.abs(userDesc.bottomInkRatio - full.bottomInkRatio);
 
-    scored.push({ char: entry.char, score: totalScore });
+      // Vowel right-vertical vs bottom-horizontal reinforcement
+      let vowelScore = 0;
+      if (userDesc.rightVertEnergy > 0.24 && entry.vowelType === 'right') {
+        vowelScore += 0.03;
+      }
+      if (userDesc.bottomHorizEnergy > 0.24 && entry.vowelType === 'bottom') {
+        vowelScore += 0.03;
+      }
+
+      const variantScore =
+        chamferSim * 0.65 +
+        densitySim * 0.20 +
+        dirSim * 0.15 -
+        topologyDiff * 0.14 -
+        bottomInkDiff * 0.16 -
+        lengthRatioDiff * 0.10 -
+        loopDiff -
+        strokePenalty +
+        vowelScore;
+
+      if (variantScore > bestVariantScore) {
+        bestVariantScore = variantScore;
+      }
+    }
+
+    // Context / Vocabulary prior boost
+    if (contextSyllables && contextSyllables.includes(entry.char)) {
+      bestVariantScore += 0.045;
+    } else if (entry.isPuzzleVocab) {
+      bestVariantScore += 0.02;
+    }
+
+    scored.push({ char: entry.char, score: bestVariantScore });
   }
 
   scored.sort((a, b) => b.score - a.score);

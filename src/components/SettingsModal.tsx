@@ -17,7 +17,9 @@ interface SettingsModalProps {
   bgmEnabled: boolean;
   sfxEnabled: boolean;
   isDarkMode: boolean;
+  autoCommitDelaySec: number;
   onChangeInputMode: (mode: 'handwriting' | 'typing') => void;
+  onChangeAutoCommitDelay: (sec: number) => void;
   onToggleBgm: () => void;
   onToggleSfx: () => void;
   onToggleDarkMode: () => void;
@@ -30,7 +32,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   bgmEnabled,
   sfxEnabled,
   isDarkMode,
+  autoCommitDelaySec,
   onChangeInputMode,
+  onChangeAutoCommitDelay,
   onToggleBgm,
   onToggleSfx,
   onToggleDarkMode,
@@ -121,6 +125,61 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </button>
             </div>
           </div>
+
+          {/* 1-2. 손글씨 자동 작성 대기 시간 설정 (0.5초씩 + / -) */}
+          {inputMode === 'handwriting' && (
+            <div
+              className={`rounded-2xl border p-3.5 ${
+                isDarkMode ? 'bg-stone-800/70 border-stone-700' : 'bg-[#FDFBF7] border-[#DCD2C0]'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-xs font-bold opacity-80">자동 작성 대기 시간</div>
+                  <div className="text-[11px] opacity-60">글씨 작성 후 입력까지 시간</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onChangeAutoCommitDelay(
+                        Math.max(0.5, Math.round((autoCommitDelaySec - 0.5) * 10) / 10)
+                      )
+                    }
+                    disabled={autoCommitDelaySec <= 0.5}
+                    aria-label="자동 작성 대기 시간 0.5초 감소"
+                    className={`w-9 h-9 rounded-xl border font-black text-lg flex items-center justify-center transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
+                      isDarkMode
+                        ? 'bg-stone-800 border-stone-600 text-stone-100 hover:bg-stone-700 active:scale-95'
+                        : 'bg-[#F3ECE0] border-[#D5CBB8] text-[#2C2520] hover:bg-[#EAE2D0] active:scale-95'
+                    }`}
+                  >
+                    -
+                  </button>
+                  <span className="w-12 text-center font-bold text-sm font-mono tabular-nums">
+                    {autoCommitDelaySec.toFixed(1)}초
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onChangeAutoCommitDelay(
+                        Math.min(5.0, Math.round((autoCommitDelaySec + 0.5) * 10) / 10)
+                      )
+                    }
+                    disabled={autoCommitDelaySec >= 5.0}
+                    aria-label="자동 작성 대기 시간 0.5초 증가"
+                    className={`w-9 h-9 rounded-xl border font-black text-lg flex items-center justify-center transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
+                      isDarkMode
+                        ? 'bg-stone-800 border-stone-600 text-stone-100 hover:bg-stone-700 active:scale-95'
+                        : 'bg-[#F3ECE0] border-[#D5CBB8] text-[#2C2520] hover:bg-[#EAE2D0] active:scale-95'
+                    }`}
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* 2. 배경음악 & 효과음 */}
           <div

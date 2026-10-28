@@ -11,6 +11,8 @@ interface HandwritingPadProps {
   selectedCellKey: string;
   currentCellInput: string;
   isDarkMode: boolean;
+  autoCommitDelaySec?: number;
+  contextSyllables?: string[];
   onSelectCandidate: (char: string) => void;
   onClearCell: () => void;
 }
@@ -19,6 +21,8 @@ export const HandwritingPad: React.FC<HandwritingPadProps> = ({
   selectedCellKey,
   currentCellInput,
   isDarkMode,
+  autoCommitDelaySec = 1.5,
+  contextSyllables,
   onSelectCandidate,
   onClearCell,
 }) => {
@@ -63,9 +67,9 @@ export const HandwritingPad: React.FC<HandwritingPadProps> = ({
   }, [strokes, currentStroke]);
 
   const candidates = useMemo(() => {
-    return recognizeHandwritingCandidates(activeStrokes);
+    return recognizeHandwritingCandidates(activeStrokes, contextSyllables);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [strokesKey]);
+  }, [strokesKey, contextSyllables]);
 
   const topCandidateRef = useRef<string | null>(null);
   useEffect(() => {
@@ -102,17 +106,18 @@ export const HandwritingPad: React.FC<HandwritingPadProps> = ({
       return;
     }
 
-    // Start 1-second auto-commit countdown
+    // Start configurable auto-commit countdown (default 2.5s)
     if (autoCommitTimerRef.current !== null) {
       window.clearTimeout(autoCommitTimerRef.current);
     }
     setIsAutoCommitting(true);
     setCommitKey((k) => k + 1);
 
+    const delayMs = Math.max(300, Math.round(autoCommitDelaySec * 1000));
     autoCommitTimerRef.current = window.setTimeout(() => {
       autoCommitTimerRef.current = null;
       commitTopCandidate();
-    }, 1000);
+    }, delayMs);
 
     return () => {
       if (autoCommitTimerRef.current !== null) {
@@ -120,7 +125,7 @@ export const HandwritingPad: React.FC<HandwritingPadProps> = ({
         autoCommitTimerRef.current = null;
       }
     };
-  }, [strokes, candidates, commitTopCandidate, cancelAutoCommit]);
+  }, [strokes, candidates, autoCommitDelaySec, commitTopCandidate, cancelAutoCommit]);
 
   const renderCanvas = useCallback(() => {
     const canvas = canvasRef.current;
@@ -299,14 +304,14 @@ export const HandwritingPad: React.FC<HandwritingPadProps> = ({
               }`}
             >
               <span>{char}</span>
-              {/* 1초 자동 입력 진행 상태 바 */}
+              {/* 자동 입력 진행 상태 바 (설정된 지연 시간) */}
               {idx === 0 && isAutoCommitting && (
                 <span
                   key={commitKey}
                   onAnimationEnd={commitTopCandidate}
                   className="absolute bottom-0 left-0 h-1 bg-white/90 rounded-full"
                   style={{
-                    animation: 'autoCommitProgress 1000ms linear forwards',
+                    animation: `autoCommitProgress ${Math.max(300, Math.round(autoCommitDelaySec * 1000))}ms linear forwards`,
                   }}
                 />
               )}

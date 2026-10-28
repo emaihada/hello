@@ -40,13 +40,23 @@ export const TypingPad: React.FC<TypingPadProps> = ({
           : 'bg-[#EFE9DA] border-[#D8CEBE] text-[#2C2520]'
       }`}
     >
-      <form onSubmit={handleSubmit} className="flex-1 flex flex-col justify-between gap-2">
+      <form
+        onSubmit={handleSubmit}
+        autoComplete="off"
+        className="flex-1 flex flex-col justify-between gap-2"
+      >
         <label htmlFor="hangul-typing-input" className="sr-only">
           정답 입력
         </label>
         <input
           id="hangul-typing-input"
+          name="hangul_crossword_typing_no_autofill"
           type="text"
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          aria-autocomplete="none"
           value={typedText}
           onChange={(e) => {
             soundManager.playPaperScratch(0.7);
