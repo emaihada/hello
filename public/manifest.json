@@ -1,0 +1,11 @@
+{
+  "name": "손글씨 십자말풀이",
+  "short_name": "손글씨 십자말풀이",
+  "description": "실제 한글 획 손글씨 인식과 타이핑, 두 손가락 줌, 스테이지 진행 및 자동 저장 기능을 갖춘 웜톤 한글 십자말풀이 게임",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F7F3E9",
+  "theme_color": "#B85D3B"
+}

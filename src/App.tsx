@@ -6,12 +6,15 @@ import {
   Clock,
   Lightbulb,
   Sparkles,
+  Check,
   CheckCircle2,
   Home,
   ChevronLeft,
   ChevronRight,
   X,
   Plus,
+  Trash2,
+  CircleHelp,
 } from 'lucide-react';
 import {
   STAGE_PUZZLES,
@@ -48,6 +51,7 @@ import { StageClearModal } from './components/StageClearModal.tsx';
 type ScreenState = 'title' | 'stage_select' | 'playing' | 'gameover';
 
 const STORAGE_KEY = 'ongeul_crossword_save_v5';
+const STAGES_PER_PAGE = 20;
 
 interface ActivePuzzleSave {
   puzzleId: string;
@@ -57,12 +61,15 @@ interface ActivePuzzleSave {
   activeDirection: Direction;
   elapsedSeconds: number;
   runWordRewardEarned: number;
+  letterHintCount?: number;
+  wordHintCount?: number;
 }
 
 interface SavedGameState {
   currency: number;
   highestReachedStage: number;
   clearedStageIds: string[];
+  hintClearedStageIds?: string[];
   startedStageIds?: string[];
   unlockedStageIds?: string[];
   customStages?: CrosswordPuzzle[];
@@ -79,9 +86,12 @@ interface SavedGameState {
 function loadInitialSave(): SavedGameState | null {
   if (typeof window === 'undefined') return null;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const storage = window.localStorage;
+    if (!storage) return null;
+    const raw = storage.getItem(STORAGE_KEY);
     if (!raw) return null;
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
   } catch (e) {
     console.error('Failed to load saved state:', e);
     return null;
@@ -91,10 +101,13 @@ function loadInitialSave(): SavedGameState | null {
 function saveStateToStorage(updater: (prev: SavedGameState) => SavedGameState) {
   if (typeof window === 'undefined') return;
   try {
+    const storage = window.localStorage;
+    if (!storage) return;
     const prev = loadInitialSave() || {
       currency: INITIAL_CURRENCY,
       highestReachedStage: 0,
       clearedStageIds: [],
+      hintClearedStageIds: [],
       startedStageIds: [],
       settings: {
         inputMode: 'handwriting',
@@ -106,10 +119,46 @@ function saveStateToStorage(updater: (prev: SavedGameState) => SavedGameState) {
       activePuzzle: null,
     };
     const next = updater(prev);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    storage.setItem(STORAGE_KEY, JSON.stringify(next));
   } catch (e) {
     console.error('Failed to save state:', e);
   }
+}
+
+function isSavedGridCompatibleWithPuzzle(
+  grid: unknown,
+  puzzle: CrosswordPuzzle,
+  selectedCell?: { row: number; col: number } | null
+): grid is GridCell[][] {
+  if (!Array.isArray(grid) || grid.length !== puzzle.size) return false;
+  for (let r = 0; r < puzzle.size; r++) {
+    const rowArr = grid[r];
+    if (!Array.isArray(rowArr) || rowArr.length !== puzzle.size) return false;
+  }
+  if (
+    !selectedCell ||
+    typeof selectedCell.row !== 'number' ||
+    typeof selectedCell.col !== 'number' ||
+    selectedCell.row < 0 ||
+    selectedCell.row >= puzzle.size ||
+    selectedCell.col < 0 ||
+    selectedCell.col >= puzzle.size
+  ) {
+    return false;
+  }
+  // Ensure every word in the current puzzle matches the saved grid's playable cells & solutions
+  for (const w of puzzle.words) {
+    const chars = Array.from(w.answer);
+    for (let i = 0; i < chars.length; i++) {
+      const r = w.direction === 'across' ? w.row : w.row + i;
+      const c = w.direction === 'across' ? w.col + i : w.col;
+      const cell = (grid as GridCell[][])[r]?.[c];
+      if (!cell || !cell.isPlayable || cell.solution !== chars[i]) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 export default function App() {
@@ -124,7 +173,7 @@ export default function App() {
     initialAutoStart ? 'playing' : 'title'
   );
 
-  // Settings
+  // Settings & How-to-Play Modal
   const [inputMode, setInputMode] = useState<'handwriting' | 'typing'>(
     initialSave?.settings?.inputMode ?? 'handwriting'
   );
@@ -141,12 +190,16 @@ export default function App() {
     initialSave?.settings?.isDarkMode ?? false
   );
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+  const [isHowToPlayOpen, setIsHowToPlayOpen] = useState<boolean>(false);
 
   // Small Square Hint Button Description Modal ('letter' | 'word' | null)
   const [activeHintModal, setActiveHintModal] = useState<'letter' | 'word' | null>(null);
 
-  // Delete Stage Confirmation Modal
-  const [stageToDelete, setStageToDelete] = useState<CrosswordPuzzle | null>(null);
+  // Stage Select Pagination & Select-to-Delete Mode State
+  const [stagePage, setStagePage] = useState<number>(0);
+  const [isDeleteMode, setIsDeleteMode] = useState<boolean>(false);
+  const [selectedDeleteIds, setSelectedDeleteIds] = useState<string[]>([]);
+  const [isConfirmBulkDeleteOpen, setIsConfirmBulkDeleteOpen] = useState<boolean>(false);
 
   // Progression, Currency & Official Stages (Default + User-Generated Stages)
   const [currency, setCurrency] = useState<number>(
@@ -157,6 +210,9 @@ export default function App() {
   );
   const [clearedStageIds, setClearedStageIds] = useState<string[]>(
     initialSave?.clearedStageIds ?? []
+  );
+  const [hintClearedStageIds, setHintClearedStageIds] = useState<string[]>(
+    initialSave?.hintClearedStageIds ?? []
   );
   const [startedStageIds, setStartedStageIds] = useState<string[]>(
     initialSave?.startedStageIds ?? []
@@ -172,10 +228,10 @@ export default function App() {
   const allStages = useMemo(() => {
     const map = new Map<string, CrosswordPuzzle>();
     for (const s of STAGE_PUZZLES) {
-      map.set(s.id, s);
+      map.set(s.id, { ...s, wordReward: 5 });
     }
     for (const cs of customStages) {
-      map.set(cs.id, cs);
+      map.set(cs.id, { ...cs, wordReward: 5 });
     }
     return Array.from(map.values()).sort(
       (a, b) => (a.stageNumber ?? 0) - (b.stageNumber ?? 0)
@@ -200,32 +256,41 @@ export default function App() {
     const ap = initialSave?.activePuzzle;
     const initialAllStages = [
       ...STAGE_PUZZLES,
-      ...(initialSave?.customStages ?? []),
+      ...(Array.isArray(initialSave?.customStages) ? initialSave.customStages : []),
     ];
     if (ap) {
       const found = initialAllStages.find((p) => p.id === ap.puzzleId);
-      if (found && Array.isArray(ap.grid) && ap.grid.length === found.size) {
+      if (found && isSavedGridCompatibleWithPuzzle(ap.grid, found, ap.selectedCell)) {
         return {
-          puzzle: found,
+          puzzle: { ...found, wordReward: 5 },
           grid: ap.grid,
-          solvedWordIds: new Set(ap.solvedWordIds),
+          solvedWordIds: new Set(Array.isArray(ap.solvedWordIds) ? ap.solvedWordIds : []),
           selectedCell: ap.selectedCell,
-          activeDirection: ap.activeDirection,
-          elapsedSeconds: ap.elapsedSeconds,
-          runWordRewardEarned: ap.runWordRewardEarned,
+          activeDirection: ap.activeDirection === 'down' ? ('down' as Direction) : ('across' as Direction),
+          elapsedSeconds: Number(ap.elapsedSeconds) || 0,
+          runWordRewardEarned: Number(ap.runWordRewardEarned) || 0,
+          letterHintCount: ap.letterHintCount ?? 0,
+          wordHintCount: ap.wordHintCount ?? 0,
           hasSavedProgress: true,
         };
       }
     }
-    const defaultPuzzle = STAGE_PUZZLES[0];
+    const defaultPuzzle = { ...STAGE_PUZZLES[0], wordReward: 5 };
+    const firstWord = defaultPuzzle.words[0] ?? {
+      row: 0,
+      col: 0,
+      direction: 'across' as Direction,
+    };
     return {
       puzzle: defaultPuzzle,
       grid: buildCrosswordGrid(defaultPuzzle),
       solvedWordIds: new Set<string>(),
-      selectedCell: { row: defaultPuzzle.words[0].row, col: defaultPuzzle.words[0].col },
-      activeDirection: defaultPuzzle.words[0].direction,
+      selectedCell: { row: firstWord.row, col: firstWord.col },
+      activeDirection: firstWord.direction,
       elapsedSeconds: 0,
       runWordRewardEarned: 0,
+      letterHintCount: 0,
+      wordHintCount: 0,
       hasSavedProgress: false,
     };
   }, [initialSave]);
@@ -277,22 +342,33 @@ export default function App() {
     };
 
     updateSize();
-    const observer = new ResizeObserver(updateSize);
-    observer.observe(el);
+    const observer =
+      typeof ResizeObserver !== 'undefined' ? new ResizeObserver(updateSize) : null;
+    observer?.observe(el);
     window.addEventListener('resize', updateSize);
     return () => {
-      observer.disconnect();
+      observer?.disconnect();
       window.removeEventListener('resize', updateSize);
     };
   }, [screen, currentPuzzle.size]);
 
-  // Timer & Rewards
+  // Timer, Rewards & Hint Usage Counts for Current Run
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(
     initialPuzzleInfo.elapsedSeconds
   );
   const [runWordRewardEarned, setRunWordRewardEarned] = useState<number>(
     initialPuzzleInfo.runWordRewardEarned
   );
+  const [runLetterHintCount, setRunLetterHintCount] = useState<number>(
+    initialPuzzleInfo.letterHintCount
+  );
+  const [runWordHintCount, setRunWordHintCount] = useState<number>(
+    initialPuzzleInfo.wordHintCount
+  );
+  const runHintCountsRef = useRef<{ letter: number; word: number }>({
+    letter: initialPuzzleInfo.letterHintCount,
+    word: initialPuzzleInfo.wordHintCount,
+  });
 
   // Robust Wall-clock Reference Timer
   const timerStartTimestampRef = useRef<number | null>(null);
@@ -356,25 +432,30 @@ export default function App() {
       currency,
       highestReachedStage,
       clearedStageIds,
+      hintClearedStageIds,
       unlockedStageIds,
       customStages,
       settings: {
+        ...prev.settings,
         inputMode,
         bgmEnabled,
         sfxEnabled,
         isDarkMode,
+        autoCommitDelaySec,
       },
     }));
   }, [
     currency,
     highestReachedStage,
     clearedStageIds,
+    hintClearedStageIds,
     unlockedStageIds,
     customStages,
     inputMode,
     bgmEnabled,
     sfxEnabled,
     isDarkMode,
+    autoCommitDelaySec,
   ]);
 
   // Persist Active In-Progress Puzzle whenever board state changes
@@ -391,6 +472,8 @@ export default function App() {
           activeDirection,
           elapsedSeconds: elapsedSecondsRef.current,
           runWordRewardEarned,
+          letterHintCount: runLetterHintCount,
+          wordHintCount: runWordHintCount,
         },
       }));
     } else if (screen === 'gameover') {
@@ -408,6 +491,8 @@ export default function App() {
     selectedCell,
     activeDirection,
     runWordRewardEarned,
+    runLetterHintCount,
+    runWordHintCount,
   ]);
 
   // Periodically flush elapsed time to storage every 5s while playing
@@ -442,6 +527,8 @@ export default function App() {
             activeDirection,
             elapsedSeconds: elapsedSecondsRef.current,
             runWordRewardEarned,
+            letterHintCount: runHintCountsRef.current.letter,
+            wordHintCount: runHintCountsRef.current.word,
           },
         }));
       }
@@ -469,23 +556,34 @@ export default function App() {
       !forceFresh &&
       ap &&
       ap.puzzleId === puzzle.id &&
-      Array.isArray(ap.grid) &&
-      ap.grid.length === puzzle.size;
+      isSavedGridCompatibleWithPuzzle(ap.grid, puzzle, ap.selectedCell);
 
     if (canResume && ap) {
       setCurrentPuzzle(puzzle);
       setGrid(ap.grid);
-      setSolvedWordIds(new Set(ap.solvedWordIds));
+      setSolvedWordIds(new Set(Array.isArray(ap.solvedWordIds) ? ap.solvedWordIds : []));
       setSelectedCell(ap.selectedCell);
-      setActiveDirection(ap.activeDirection);
+      setActiveDirection(ap.activeDirection === 'down' ? 'down' : 'across');
       const restoredSec = Number(ap.elapsedSeconds) || 0;
       baseElapsedSecondsRef.current = restoredSec;
       timerStartTimestampRef.current = Date.now();
       setElapsedSeconds(restoredSec);
-      setRunWordRewardEarned(ap.runWordRewardEarned);
+      setRunWordRewardEarned(Number(ap.runWordRewardEarned) || 0);
+      const restoredLetterHints = ap.letterHintCount ?? 0;
+      const restoredWordHints = ap.wordHintCount ?? 0;
+      runHintCountsRef.current = {
+        letter: restoredLetterHints,
+        word: restoredWordHints,
+      };
+      setRunLetterHintCount(restoredLetterHints);
+      setRunWordHintCount(restoredWordHints);
     } else {
       const freshGrid = buildCrosswordGrid(puzzle);
-      const firstWord = puzzle.words[0];
+      const firstWord = puzzle.words[0] ?? {
+        row: 0,
+        col: 0,
+        direction: 'across' as Direction,
+      };
       setCurrentPuzzle(puzzle);
       setGrid(freshGrid);
       setSolvedWordIds(new Set());
@@ -495,6 +593,9 @@ export default function App() {
       timerStartTimestampRef.current = Date.now();
       setElapsedSeconds(0);
       setRunWordRewardEarned(0);
+      runHintCountsRef.current = { letter: 0, word: 0 };
+      setRunLetterHintCount(0);
+      setRunWordHintCount(0);
     }
 
     setZoomScale(1.0);
@@ -630,11 +731,20 @@ export default function App() {
         setCurrency((prev) => prev + newlyEarnedWordCoins + clearBonus);
         setRunWordRewardEarned((prev) => prev + newlyEarnedWordCoins);
 
+        const usedHintsInThisRun =
+          runHintCountsRef.current.letter > 0 || runHintCountsRef.current.word > 0;
+
         if (currentPuzzle.stageNumber !== undefined) {
           const idx = allStages.findIndex((s) => s.id === currentPuzzle.id);
           setClearedStageIds((prev) =>
             prev.includes(currentPuzzle.id) ? prev : [...prev, currentPuzzle.id]
           );
+          setHintClearedStageIds((prev) => {
+            if (usedHintsInThisRun) {
+              return prev.includes(currentPuzzle.id) ? prev : [...prev, currentPuzzle.id];
+            }
+            return prev.filter((id) => id !== currentPuzzle.id);
+          });
           if (idx >= 0) {
             setHighestReachedStage((prev) =>
               Math.min(allStages.length - 1, Math.max(prev, idx + 1))
@@ -867,6 +977,9 @@ export default function App() {
     }
 
     const answerChar = grid[targetPos.row][targetPos.col].solution;
+    const nextLetterCount = runHintCountsRef.current.letter + 1;
+    runHintCountsRef.current.letter = nextLetterCount;
+    setRunLetterHintCount(nextLetterCount);
     setCurrency((prev) => prev - HINT_LETTER_COST);
     setActiveHintModal(null);
     handleEnterCharacter(answerChar);
@@ -886,6 +999,9 @@ export default function App() {
       return;
     }
 
+    const nextWordCount = runHintCountsRef.current.word + 1;
+    runHintCountsRef.current.word = nextWordCount;
+    setRunWordHintCount(nextWordCount);
     setCurrency((prev) => prev - HINT_WORD_COST);
     setActiveHintModal(null);
     handleEnterFullWord(activeWord.answer);
@@ -1071,6 +1187,7 @@ export default function App() {
 
   // Live preview of List<CrosswordWordData> for the auto-assigned stageNumber with user-chosen grid size and word count
   const previewWordDataList = useMemo(() => {
+    if (!isCreateStageOpen) return [];
     return generateCrosswordWordDataList(
       nextAutoStageNumber,
       createGridSize,
@@ -1078,12 +1195,29 @@ export default function App() {
       previouslyUsedWords
     );
   }, [
+    isCreateStageOpen,
     nextAutoStageNumber,
     createGridSize,
     createTargetWords,
     previouslyUsedWords,
     dictionaryWordCount,
   ]);
+
+  const totalStagePages = useMemo(
+    () => Math.max(1, Math.ceil((allStages.length + 1) / STAGES_PER_PAGE)),
+    [allStages.length]
+  );
+
+  useEffect(() => {
+    if (stagePage >= totalStagePages) {
+      setStagePage(Math.max(0, totalStagePages - 1));
+    }
+  }, [stagePage, totalStagePages]);
+
+  const currentPageStages = useMemo(() => {
+    const start = stagePage * STAGES_PER_PAGE;
+    return allStages.slice(start, start + STAGES_PER_PAGE);
+  }, [allStages, stagePage]);
 
   const handleOpenCreateStageModal = () => {
     setCreateGridSize(15);
@@ -1105,6 +1239,8 @@ export default function App() {
       createGridSize
     );
 
+    const newStageIndex = allStages.length;
+
     setCustomStages((prev) => {
       const filtered = prev.filter((p) => p.id !== generatedPuzzle.id);
       const updated = [...filtered, generatedPuzzle];
@@ -1117,31 +1253,49 @@ export default function App() {
 
     soundManager.playWordComplete();
     setIsCreateStageOpen(false);
+    setStagePage(Math.floor(newStageIndex / STAGES_PER_PAGE));
 
     if (playImmediately) {
       startPuzzle(generatedPuzzle, true);
     }
   };
 
-  const handleConfirmDeleteStage = (stage: CrosswordPuzzle) => {
+  const handleToggleSelectDeleteStage = (stageId: string) => {
+    soundManager.playSnapFit();
+    setSelectedDeleteIds((prev) =>
+      prev.includes(stageId) ? prev.filter((id) => id !== stageId) : [...prev, stageId]
+    );
+  };
+
+  const handleConfirmBulkDeleteStages = () => {
+    if (selectedDeleteIds.length === 0) return;
+    const toDeleteSet = new Set(selectedDeleteIds);
+
     setCustomStages((prev) => {
-      const updated = prev.filter((s) => s.id !== stage.id);
+      const updated = prev.filter((s) => !toDeleteSet.has(s.id));
       saveStateToStorage((s) => ({
         ...s,
         customStages: updated,
-        clearedStageIds: s.clearedStageIds.filter((id) => id !== stage.id),
-        startedStageIds: (s.startedStageIds || []).filter((id) => id !== stage.id),
-        unlockedStageIds: (s.unlockedStageIds || []).filter((id) => id !== stage.id),
-        activePuzzle: s.activePuzzle?.puzzleId === stage.id ? null : s.activePuzzle,
+        clearedStageIds: s.clearedStageIds.filter((id) => !toDeleteSet.has(id)),
+        hintClearedStageIds: (s.hintClearedStageIds || []).filter(
+          (id) => !toDeleteSet.has(id)
+        ),
+        startedStageIds: (s.startedStageIds || []).filter((id) => !toDeleteSet.has(id)),
+        unlockedStageIds: (s.unlockedStageIds || []).filter((id) => !toDeleteSet.has(id)),
+        activePuzzle:
+          s.activePuzzle && toDeleteSet.has(s.activePuzzle.puzzleId)
+            ? null
+            : s.activePuzzle,
       }));
       return updated;
     });
-    setClearedStageIds((prev) => prev.filter((id) => id !== stage.id));
-    setStartedStageIds((prev) => prev.filter((id) => id !== stage.id));
-    setUnlockedStageIds((prev) => prev.filter((id) => id !== stage.id));
+    setClearedStageIds((prev) => prev.filter((id) => !toDeleteSet.has(id)));
+    setHintClearedStageIds((prev) => prev.filter((id) => !toDeleteSet.has(id)));
+    setStartedStageIds((prev) => prev.filter((id) => !toDeleteSet.has(id)));
+    setUnlockedStageIds((prev) => prev.filter((id) => !toDeleteSet.has(id)));
 
-    if (currentPuzzle.id === stage.id) {
-      const fallback = STAGE_PUZZLES[0];
+    if (toDeleteSet.has(currentPuzzle.id)) {
+      const fallback = { ...STAGE_PUZZLES[0], wordReward: 5 };
       setCurrentPuzzle(fallback);
       setGrid(buildCrosswordGrid(fallback));
       setSolvedWordIds(new Set());
@@ -1149,29 +1303,51 @@ export default function App() {
     }
 
     soundManager.playSnapFit();
-    setStageToDelete(null);
+    setSelectedDeleteIds([]);
+    setIsConfirmBulkDeleteOpen(false);
+    setIsDeleteMode(false);
   };
 
   return (
     <div
-      className={`h-[100dvh] w-full overflow-hidden flex flex-col transition-colors duration-200 ${
+      className={`app-viewport h-[100dvh] w-full overflow-hidden flex flex-col transition-colors duration-200 ${
         isDarkMode
           ? 'bg-[#1C1917] text-[#F5F2EB]'
           : 'bg-[#F7F3E9] text-[#2C2520]'
       }`}
     >
       {/* =====================================================================
-          1. 메인 화면 (제목과 시작 버튼으로만 구성)
+          1. 메인 화면 (오른쪽 위 설정 버튼, 중앙 로고/제목, 시작하기 + 게임방법 버튼)
       ===================================================================== */}
       {screen === 'title' && (
-        <main className="h-full w-full flex flex-col items-center justify-center px-6 overflow-hidden">
+        <main className="relative h-full w-full flex flex-col items-center justify-center px-6 overflow-hidden">
+          {/* 오른쪽 위 설정 버튼 */}
+          <div className="absolute top-4 right-4 z-10">
+            <button
+              type="button"
+              onClick={() => {
+                soundManager.playSnapFit();
+                setIsSettingsOpen(true);
+              }}
+              aria-label="설정 열기"
+              className={`min-h-[44px] min-w-[44px] px-3.5 rounded-2xl border font-bold text-sm flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shadow-sm ${
+                isDarkMode
+                  ? 'bg-stone-800 border-stone-700 text-stone-100 hover:bg-stone-700'
+                  : 'bg-[#EFE9DA] border-[#D5CBB8] text-[#2C2520] hover:bg-[#E4DCC8]'
+              }`}
+            >
+              <Settings className="w-4 h-4" />
+              <span>설정</span>
+            </button>
+          </div>
+
           <div className="flex flex-col items-center gap-10 w-full max-w-xs text-center">
             <div className="flex flex-col items-center gap-4">
               <svg
                 viewBox="0 0 64 64"
                 className="w-20 h-20 shadow-md rounded-2xl"
                 role="img"
-                aria-label="온글 십자말풀이 로고"
+                aria-label="손글씨 십자말풀이 로고"
               >
                 <rect
                   x="0"
@@ -1210,7 +1386,7 @@ export default function App() {
                   fontWeight="800"
                   fontFamily="IBM Plex Sans KR, sans-serif"
                 >
-                  온
+                  손
                 </text>
                 <text
                   x="44"
@@ -1226,7 +1402,7 @@ export default function App() {
               </svg>
 
               <h1 className="text-4xl font-bold tracking-tight whitespace-nowrap">
-                온글 십자말풀이
+                손글씨 십자말풀이
               </h1>
             </div>
 
@@ -1255,6 +1431,8 @@ export default function App() {
                 data-start="true"
                 onClick={() => {
                   soundManager.playSnapFit();
+                  setIsDeleteMode(false);
+                  setSelectedDeleteIds([]);
                   setScreen('stage_select');
                 }}
                 className={`w-full min-h-[52px] rounded-2xl font-bold text-lg flex items-center justify-center gap-2 transition-transform active:scale-95 whitespace-nowrap ${
@@ -1269,151 +1447,372 @@ export default function App() {
               >
                 <span>{hasSavedActiveGame ? '스테이지 목록' : '시작하기'}</span>
               </button>
+
+              {/* 시작하기 아래 게임방법 버튼 */}
+              <button
+                type="button"
+                data-testid="how-to-play-btn"
+                onClick={() => {
+                  soundManager.playSnapFit();
+                  setIsHowToPlayOpen(true);
+                }}
+                className={`w-full min-h-[48px] rounded-2xl border font-bold text-base flex items-center justify-center gap-2 transition-transform active:scale-95 whitespace-nowrap ${
+                  isDarkMode
+                    ? 'bg-stone-800/80 border-stone-700 text-stone-200 hover:bg-stone-700'
+                    : 'bg-[#EFE9DA] border-[#D5CBB8] text-[#4A3F35] hover:bg-[#E4DCC8]'
+                }`}
+              >
+                <CircleHelp className="w-5 h-5" />
+                <span>게임방법</span>
+              </button>
             </div>
           </div>
         </main>
       )}
 
       {/* =====================================================================
-          2. 스테이지 선택 화면 (왼쪽 위 메인화면, 오른쪽 위 재화 수 + 설정)
+          2. 스테이지 선택 화면
+          - 상단: 메인화면 / 스테이지 삭제(선택삭제) / 재화 / 설정
+          - 중앙: 20개 단위 페이지네이션 + 수직 중앙 정렬된 스테이지 그리드
+          - 하단: 페이지 이동 컨트롤
       ===================================================================== */}
       {screen === 'stage_select' && (
-        <main className="h-full w-full max-w-md md:max-w-2xl mx-auto px-4 py-3 flex flex-col overflow-hidden">
-          <div className="flex items-center justify-between gap-2 mb-3 shrink-0">
-            <button
-              type="button"
-              onClick={() => {
-                soundManager.playSnapFit();
-                setScreen('title');
-              }}
-              aria-label="메인화면으로 이동"
-              className={`min-h-[44px] px-3.5 rounded-2xl border font-bold text-sm flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
-                isDarkMode
-                  ? 'bg-stone-800 border-stone-700 text-stone-100 hover:bg-stone-700'
-                  : 'bg-[#EFE9DA] border-[#D5CBB8] text-[#2C2520] hover:bg-[#E4DCC8]'
-              }`}
-            >
-              <Home className="w-4 h-4" />
-              <span>메인화면</span>
-            </button>
-
-            <div className="flex items-center gap-2 shrink-0">
-              <div
-                aria-label={`보유 재화 ${currency} 엽전`}
-                className={`min-h-[44px] px-3.5 rounded-2xl border flex items-center gap-1.5 font-mono font-bold text-sm tabular-nums whitespace-nowrap ${
-                  isDarkMode
-                    ? 'bg-stone-900 border-stone-700 text-amber-300'
-                    : 'bg-[#EFE9DA] border-[#D5CBB8] text-[#7A3E18]'
-                }`}
-              >
-                <Coins className="w-4 h-4 text-amber-600 dark:text-amber-400" />
-                <span>{currency}</span>
-              </div>
-
+        <main className="h-full w-full max-w-md md:max-w-2xl mx-auto px-4 py-3 flex flex-col justify-between overflow-hidden">
+          <div className="flex flex-col gap-2 shrink-0">
+            <div className="flex items-center justify-between gap-2">
               <button
                 type="button"
-                onClick={() => setIsSettingsOpen(true)}
-                aria-label="설정 열기"
-                className={`min-h-[44px] min-w-[44px] px-3 rounded-2xl border font-bold text-sm flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
+                onClick={() => {
+                  soundManager.playSnapFit();
+                  setIsDeleteMode(false);
+                  setSelectedDeleteIds([]);
+                  setScreen('title');
+                }}
+                aria-label="메인화면으로 이동"
+                className={`min-h-[44px] px-3.5 rounded-2xl border font-bold text-sm flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
                   isDarkMode
                     ? 'bg-stone-800 border-stone-700 text-stone-100 hover:bg-stone-700'
                     : 'bg-[#EFE9DA] border-[#D5CBB8] text-[#2C2520] hover:bg-[#E4DCC8]'
                 }`}
               >
-                <Settings className="w-4 h-4" />
-                <span>설정</span>
+                <Home className="w-4 h-4" />
+                <span>메인화면</span>
               </button>
+
+              <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+                {/* 내가 만든 스테이지 선택 삭제 모드 토글 버튼 */}
+                <button
+                  type="button"
+                  data-testid="stage-delete-mode-btn"
+                  onClick={() => {
+                    soundManager.playSnapFit();
+                    setIsDeleteMode((prev) => !prev);
+                    setSelectedDeleteIds([]);
+                  }}
+                  aria-label="스테이지 삭제 모드 전환"
+                  className={`min-h-[44px] px-3 rounded-2xl border font-bold text-xs sm:text-sm flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
+                    isDeleteMode
+                      ? 'bg-rose-600 border-rose-500 text-white hover:bg-rose-500'
+                      : isDarkMode
+                      ? 'bg-stone-800 border-stone-700 text-rose-300 hover:bg-stone-700'
+                      : 'bg-[#EFE9DA] border-[#D5CBB8] text-[#9E3B26] hover:bg-[#E4DCC8]'
+                  }`}
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>스테이지 삭제</span>
+                </button>
+
+                <div
+                  aria-label={`보유 재화 ${currency} 엽전`}
+                  className={`min-h-[44px] px-3 sm:px-3.5 rounded-2xl border flex items-center gap-1.5 font-mono font-bold text-sm tabular-nums whitespace-nowrap ${
+                    isDarkMode
+                      ? 'bg-stone-900 border-stone-700 text-amber-300'
+                      : 'bg-[#EFE9DA] border-[#D5CBB8] text-[#7A3E18]'
+                  }`}
+                >
+                  <Coins className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                  <span>{currency}</span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setIsSettingsOpen(true)}
+                  aria-label="설정 열기"
+                  className={`min-h-[44px] min-w-[44px] px-3 rounded-2xl border font-bold text-sm flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
+                    isDarkMode
+                      ? 'bg-stone-800 border-stone-700 text-stone-100 hover:bg-stone-700'
+                      : 'bg-[#EFE9DA] border-[#D5CBB8] text-[#2C2520] hover:bg-[#E4DCC8]'
+                  }`}
+                >
+                  <Settings className="w-4 h-4" />
+                  <span className="hidden sm:inline">설정</span>
+                </button>
+              </div>
             </div>
+
+            {/* 선택 삭제 모드일 때 상단에 나타나는 선택 삭제 액션 바 */}
+            {isDeleteMode && (
+              <div
+                data-testid="delete-mode-bar"
+                className={`rounded-2xl border px-3.5 py-2.5 flex items-center justify-between gap-2 transition-colors ${
+                  isDarkMode
+                    ? 'bg-rose-950/40 border-rose-800/70 text-rose-100'
+                    : 'bg-[#FDF2F0] border-[#E6B8B0] text-[#5C241D]'
+                }`}
+              >
+                <span className="text-xs sm:text-sm font-bold truncate">
+                  {customStages.length === 0
+                    ? '삭제할 수 있는 내가 만든 스테이지가 없습니다.'
+                    : `삭제할 스테이지 선택 (${selectedDeleteIds.length}개 선택됨)`}
+                </span>
+
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {customStages.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        soundManager.playSnapFit();
+                        if (selectedDeleteIds.length === customStages.length) {
+                          setSelectedDeleteIds([]);
+                        } else {
+                          setSelectedDeleteIds(customStages.map((cs) => cs.id));
+                        }
+                      }}
+                      className={`min-h-[34px] px-2.5 rounded-xl border text-xs font-bold whitespace-nowrap ${
+                        isDarkMode
+                          ? 'bg-stone-800 border-stone-700 text-stone-200 hover:bg-stone-700'
+                          : 'bg-white border-[#D5CBB8] text-[#4A3F35] hover:bg-[#F3ECE0]'
+                      }`}
+                    >
+                      {selectedDeleteIds.length === customStages.length
+                        ? '전체 해제'
+                        : '전체 선택'}
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    data-testid="confirm-selected-delete-btn"
+                    disabled={selectedDeleteIds.length === 0}
+                    onClick={() => {
+                      soundManager.playSnapFit();
+                      setIsConfirmBulkDeleteOpen(true);
+                    }}
+                    className="min-h-[34px] px-3 rounded-xl font-bold text-xs bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap shadow-xs"
+                  >
+                    선택 삭제 ({selectedDeleteIds.length})
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      soundManager.playSnapFit();
+                      setIsDeleteMode(false);
+                      setSelectedDeleteIds([]);
+                    }}
+                    className={`min-h-[34px] px-2.5 rounded-xl border text-xs font-bold whitespace-nowrap ${
+                      isDarkMode
+                        ? 'bg-stone-800 border-stone-700 text-stone-300 hover:bg-stone-700'
+                        : 'bg-[#EFE9DA] border-[#D5CBB8] text-[#4A3F35] hover:bg-[#E4DCC8]'
+                    }`}
+                  >
+                    취소
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
+          {/* 중앙 정렬된 스테이지 그리드 영역 (페이지당 최대 20개) */}
           <div
-            className="flex-1 overflow-y-auto pr-1"
+            className="flex-1 min-h-0 flex flex-col justify-center overflow-y-auto py-2 pr-1"
             role="list"
             aria-label="스테이지 목록"
           >
-            <div className="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 gap-3 p-1">
-              {allStages.map((stage, idx) => {
-                const isCleared = clearedStageIds.includes(stage.id);
-                const hasActiveInput =
-                  hasSavedActiveGame &&
-                  currentPuzzle.id === stage.id &&
-                  grid.some((row) => row.some((c) => c.isPlayable && c.userInput.length > 0));
-                const isStarted =
-                  startedStageIds.includes(stage.id) || hasActiveInput;
-                const isCustom = customStages.some((cs) => cs.id === stage.id);
-                const isCurrentActive = hasActiveInput && !isCleared;
+            <div className="w-full my-auto">
+              <div className="grid grid-cols-4 sm:grid-cols-5 gap-3 p-1">
+                {currentPageStages.map((stage, pageIdx) => {
+                  const globalIdx = stagePage * STAGES_PER_PAGE + pageIdx;
+                  const isCleared = clearedStageIds.includes(stage.id);
+                  const isHintCleared =
+                    isCleared && hintClearedStageIds.includes(stage.id);
+                  const hasActiveInput =
+                    hasSavedActiveGame &&
+                    currentPuzzle.id === stage.id &&
+                    grid.some((row) =>
+                      row.some((c) => c.isPlayable && c.userInput.length > 0)
+                    );
+                  const isStarted =
+                    startedStageIds.includes(stage.id) || hasActiveInput;
+                  const isCustom = customStages.some((cs) => cs.id === stage.id);
+                  const isCurrentActive = hasActiveInput && !isCleared;
+                  const isSelectedForDelete = selectedDeleteIds.includes(stage.id);
 
-                return (
-                  <div key={stage.id} className="relative aspect-square">
-                    <button
-                      type="button"
-                      onClick={() => startPuzzle(stage)}
-                      aria-label={`${stage.stageNumber ?? idx + 1}단계 ${
-                        isCleared ? '완료' : isStarted ? '진행 중' : '미진행'
-                      }`}
-                      className={`w-full h-full rounded-2xl border-2 flex flex-col items-center justify-center relative font-bold transition-all shadow-sm active:scale-95 ${
-                        isCleared
-                          ? isDarkMode
-                            ? 'bg-emerald-950/60 border-emerald-500 text-emerald-100 hover:bg-emerald-900/60'
-                            : 'bg-[#EBF5EF] border-[#2E6F5E] text-[#1E4E42] hover:bg-[#DFEFE6]'
-                          : isStarted
-                          ? isDarkMode
-                            ? 'bg-amber-600 border-amber-400 text-stone-950 hover:bg-amber-500 shadow-md'
-                            : 'bg-[#B85D3B] border-[#964728] text-white hover:bg-[#A34E2E] shadow-md'
-                          : isDarkMode
-                          ? 'opacity-40 hover:opacity-90 transition-opacity bg-stone-900/60 border-stone-800 text-stone-400 hover:bg-stone-800'
-                          : 'opacity-40 hover:opacity-90 transition-opacity bg-[#EFE9DA]/60 border-[#D5CBB8] text-[#7A6E60] hover:bg-[#EFE9DA]'
-                      }`}
-                    >
-                      <span className="text-2xl sm:text-3xl font-extrabold tracking-tight">
-                        {stage.stageNumber ?? idx + 1}
-                      </span>
-
-                      {/* 완료 체크 아이콘 (초록색 푼 문제) */}
-                      {isCleared && (
-                        <div className="absolute top-1.5 left-1.5 w-4 h-4 rounded-full bg-[#2E6F5E] dark:bg-emerald-600 text-white flex items-center justify-center">
-                          <CheckCircle2 className="w-3.5 h-3.5" />
-                        </div>
-                      )}
-
-                      {/* 풀던 중 표시 점 (주황색 풀던 문제) */}
-                      {isCurrentActive && (
-                        <div className="absolute bottom-1.5 w-2 h-2 rounded-full bg-amber-200 animate-pulse" />
-                      )}
-                    </button>
-
-                    {/* 생성한 스테이지 삭제 버튼 */}
-                    {isCustom && (
+                  return (
+                    <div key={stage.id} className="relative aspect-square">
                       <button
                         type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setStageToDelete(stage);
+                        disabled={isDeleteMode && !isCustom}
+                        onClick={() => {
+                          if (isDeleteMode) {
+                            if (isCustom) {
+                              handleToggleSelectDeleteStage(stage.id);
+                            }
+                            return;
+                          }
+                          startPuzzle(stage);
                         }}
-                        aria-label={`${stage.stageNumber ?? idx + 1}단계 삭제`}
-                        className="absolute -top-1.5 -right-1.5 w-6 h-6 rounded-full bg-rose-600 hover:bg-rose-500 text-white flex items-center justify-center shadow-md active:scale-90 z-20 transition-transform"
+                        aria-label={`${stage.stageNumber ?? globalIdx + 1}단계 ${
+                          isCleared
+                            ? isHintCleared
+                              ? '힌트 사용 완료'
+                              : '힌트 없이 완료'
+                            : isStarted
+                            ? '진행 중'
+                            : '미진행'
+                        }`}
+                        className={`w-full h-full rounded-2xl border-2 flex flex-col items-center justify-center relative font-bold transition-all shadow-sm active:scale-95 ${
+                          isDeleteMode
+                            ? !isCustom
+                              ? isDarkMode
+                                ? 'opacity-25 cursor-not-allowed bg-stone-900 border-stone-800 text-stone-500'
+                                : 'opacity-25 cursor-not-allowed bg-[#EFE9DA] border-[#D5CBB8] text-[#8C7A6B]'
+                              : isSelectedForDelete
+                              ? isDarkMode
+                                ? 'bg-rose-950/75 border-rose-500 text-rose-100 ring-2 ring-rose-500'
+                                : 'bg-[#FDE8E8] border-rose-600 text-[#991B1B] ring-2 ring-rose-500'
+                              : isDarkMode
+                              ? 'bg-stone-800 border-stone-600 text-stone-100 hover:border-rose-400'
+                              : 'bg-[#FDFBF7] border-[#B8A990] text-[#2C2520] hover:border-rose-500'
+                            : isCleared
+                            ? isDarkMode
+                              ? 'bg-emerald-950/60 border-emerald-500 text-emerald-100 hover:bg-emerald-900/60'
+                              : 'bg-[#EBF5EF] border-[#2E6F5E] text-[#1E4E42] hover:bg-[#DFEFE6]'
+                            : isStarted
+                            ? isDarkMode
+                              ? 'bg-amber-950/45 border-amber-600/70 text-amber-200 hover:bg-amber-900/50'
+                              : 'bg-[#F4E9D8] border-[#C69C6D] text-[#5C3D24] hover:bg-[#EBDDCA]'
+                            : isDarkMode
+                            ? 'opacity-40 hover:opacity-90 transition-opacity bg-stone-900/60 border-stone-800 text-stone-400 hover:bg-stone-800'
+                            : 'opacity-40 hover:opacity-90 transition-opacity bg-[#EFE9DA]/60 border-[#D5CBB8] text-[#7A6E60] hover:bg-[#EFE9DA]'
+                        }`}
                       >
-                        <X className="w-3.5 h-3.5 stroke-[2.5]" />
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
+                        <span className="text-2xl sm:text-3xl font-extrabold tracking-tight">
+                          {stage.stageNumber ?? globalIdx + 1}
+                        </span>
 
-              {/* 유저가 직접 새 정식 스테이지를 생성해 추가하는 바둑판 타일 */}
-              <button
-                type="button"
-                onClick={handleOpenCreateStageModal}
-                aria-label="새 스테이지 생성"
-                className={`aspect-square rounded-2xl border-2 border-dashed flex flex-col items-center justify-center gap-0.5 font-bold transition-all active:scale-95 ${
-                  isDarkMode
-                    ? 'bg-stone-900/70 border-amber-500/70 text-amber-300 hover:bg-stone-800'
-                    : 'bg-[#EFE9DA]/80 border-[#B85D3B] text-[#9E4726] hover:bg-[#E5DEC9]'
-                }`}
-              >
-                <Plus className="w-7 h-7 stroke-[2.5]" />
-              </button>
+                        {/* 클리어 표시:
+                            - 힌트를 쓰지 않고 풀면: 안쪽이 칠해진 동그라미에 체크 표시 (지금처럼 표시)
+                            - 힌트를 사용해서 풀면: 안쪽이 칠해지지 않은 동그라미에 체크된 표시 */}
+                        {isCleared && !isHintCleared && (
+                          <div
+                            data-testid={`stage-clear-badge-${stage.stageNumber ?? globalIdx + 1}`}
+                            data-clear-type="no-hint"
+                            title="힌트 없이 클리어"
+                            className="absolute top-1.5 left-1.5 w-4 h-4 rounded-full bg-[#2E6F5E] dark:bg-emerald-600 text-white flex items-center justify-center"
+                          >
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                          </div>
+                        )}
+
+                        {isCleared && isHintCleared && (
+                          <div
+                            data-testid={`stage-clear-badge-${stage.stageNumber ?? globalIdx + 1}`}
+                            data-clear-type="hint-used"
+                            title="힌트 사용하여 클리어"
+                            className="absolute top-1.5 left-1.5 w-4 h-4 rounded-full border-[1.75px] border-[#2E6F5E] dark:border-emerald-400 bg-transparent text-[#2E6F5E] dark:text-emerald-400 flex items-center justify-center"
+                          >
+                            <Check className="w-2.5 h-2.5 stroke-[3]" />
+                          </div>
+                        )}
+
+                        {/* 선택 삭제 모드일 때 내가 만든 스테이지 우측 상단 선택 체크박스 */}
+                        {isDeleteMode && isCustom && (
+                          <div
+                            className={`absolute top-1.5 right-1.5 w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors ${
+                              isSelectedForDelete
+                                ? 'bg-rose-600 border-rose-600 text-white'
+                                : isDarkMode
+                                ? 'bg-stone-900/80 border-stone-400 text-transparent'
+                                : 'bg-white/90 border-[#8C7A6B] text-transparent'
+                            }`}
+                          >
+                            <Check className="w-3 h-3 stroke-[3]" />
+                          </div>
+                        )}
+
+                        {/* 풀던 중 표시 점 (은은한 황토/호박색 풀던 문제) */}
+                        {isCurrentActive && !isDeleteMode && (
+                          <div className="absolute bottom-1.5 w-2 h-2 rounded-full bg-[#B87D4B] dark:bg-amber-400 animate-pulse" />
+                        )}
+                      </button>
+                    </div>
+                  );
+                })}
+
+                {/* 현재 페이지의 스테이지가 20개 미만일 때(마지막 페이지) 새 스테이지 생성(+) 타일 표시 */}
+                {currentPageStages.length < STAGES_PER_PAGE && !isDeleteMode && (
+                  <button
+                    type="button"
+                    onClick={handleOpenCreateStageModal}
+                    aria-label="새 스테이지 생성"
+                    className={`aspect-square rounded-2xl border-2 border-dashed flex flex-col items-center justify-center gap-0.5 font-bold transition-all active:scale-95 ${
+                      isDarkMode
+                        ? 'bg-stone-900/70 border-amber-500/70 text-amber-300 hover:bg-stone-800'
+                        : 'bg-[#EFE9DA]/80 border-[#B85D3B] text-[#9E4726] hover:bg-[#E5DEC9]'
+                    }`}
+                  >
+                    <Plus className="w-7 h-7 stroke-[2.5]" />
+                  </button>
+                )}
+              </div>
             </div>
+          </div>
+
+          {/* 하단 페이지네이션 컨트롤 (20개 단위 페이지 이동) */}
+          <div className="flex items-center justify-center gap-3 pt-2 shrink-0">
+            <button
+              type="button"
+              disabled={stagePage === 0}
+              onClick={() => {
+                soundManager.playSnapFit();
+                setStagePage((p) => Math.max(0, p - 1));
+              }}
+              aria-label="이전 페이지"
+              className={`min-h-[38px] px-3 rounded-xl border font-bold text-xs flex items-center gap-1 transition-colors disabled:opacity-35 disabled:cursor-not-allowed ${
+                isDarkMode
+                  ? 'bg-stone-800 border-stone-700 text-stone-200 hover:bg-stone-700'
+                  : 'bg-[#EFE9DA] border-[#D5CBB8] text-[#2C2520] hover:bg-[#E4DCC8]'
+              }`}
+            >
+              <ChevronLeft className="w-4 h-4" />
+              <span>이전</span>
+            </button>
+
+            <span
+              data-testid="stage-page-indicator"
+              className="font-mono font-bold text-xs sm:text-sm tabular-nums px-2"
+            >
+              {stagePage + 1} / {totalStagePages} 페이지
+            </span>
+
+            <button
+              type="button"
+              disabled={stagePage >= totalStagePages - 1}
+              onClick={() => {
+                soundManager.playSnapFit();
+                setStagePage((p) => Math.min(totalStagePages - 1, p + 1));
+              }}
+              aria-label="다음 페이지"
+              className={`min-h-[38px] px-3 rounded-xl border font-bold text-xs flex items-center gap-1 transition-colors disabled:opacity-35 disabled:cursor-not-allowed ${
+                isDarkMode
+                  ? 'bg-stone-800 border-stone-700 text-stone-200 hover:bg-stone-700'
+                  : 'bg-[#EFE9DA] border-[#D5CBB8] text-[#2C2520] hover:bg-[#E4DCC8]'
+              }`}
+            >
+              <span>다음</span>
+              <ChevronRight className="w-4 h-4" />
+            </button>
           </div>
         </main>
       )}
@@ -2096,8 +2495,8 @@ export default function App() {
         </div>
       )}
 
-      {/* 생성한 스테이지 삭제 확인 모달 */}
-      {stageToDelete !== null && (
+      {/* 선택한 스테이지 일괄 삭제 확인 모달 */}
+      {isConfirmBulkDeleteOpen && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 overflow-hidden"
           role="dialog"
@@ -2112,18 +2511,19 @@ export default function App() {
             }`}
           >
             <h3 id="delete-stage-modal-title" className="text-base font-bold mb-2">
-              스테이지 삭제
+              선택한 스테이지 삭제
             </h3>
             <p className="text-sm opacity-80 mb-5 break-keep">
+              선택한{' '}
               <strong className="text-rose-600 dark:text-rose-400">
-                {stageToDelete.stageNumber ?? ''}단계
-              </strong>{' '}
-              스테이지를 정말 삭제하시겠습니까? 삭제된 스테이지는 복구할 수 없습니다.
+                {selectedDeleteIds.length}개
+              </strong>
+              의 내가 만든 스테이지를 정말 삭제하시겠습니까? 삭제된 스테이지는 복구할 수 없습니다.
             </p>
             <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
-                onClick={() => setStageToDelete(null)}
+                onClick={() => setIsConfirmBulkDeleteOpen(false)}
                 className={`min-h-[44px] rounded-xl border font-bold text-sm ${
                   isDarkMode
                     ? 'bg-stone-800 border-stone-700 text-stone-200 hover:bg-stone-700'
@@ -2134,12 +2534,124 @@ export default function App() {
               </button>
               <button
                 type="button"
-                onClick={() => handleConfirmDeleteStage(stageToDelete)}
+                onClick={handleConfirmBulkDeleteStages}
                 className="min-h-[44px] rounded-xl font-bold text-sm bg-rose-600 text-white hover:bg-rose-700 active:scale-95 shadow-md"
               >
                 삭제
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 게임방법 모달 (메인 화면 '게임방법' 버튼 클릭 시 표시) */}
+      {isHowToPlayOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/65 overflow-hidden"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="how-to-play-modal-title"
+        >
+          <div
+            className={`w-full max-w-md rounded-3xl border p-5 shadow-2xl transition-colors flex flex-col max-h-[85dvh] ${
+              isDarkMode
+                ? 'bg-stone-900 border-stone-700 text-stone-100'
+                : 'bg-[#FAF5E8] border-[#D8CEBE] text-[#2C2520]'
+            }`}
+          >
+            <div className="flex items-center justify-between mb-3 shrink-0">
+              <div className="flex items-center gap-2 font-bold text-lg">
+                <CircleHelp className="w-5 h-5 text-[#B85D3B] dark:text-amber-400" />
+                <h2 id="how-to-play-modal-title">게임방법</h2>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setIsHowToPlayOpen(false)}
+                aria-label="게임방법 닫기"
+                className={`w-8 h-8 rounded-lg flex items-center justify-center ${
+                  isDarkMode
+                    ? 'bg-stone-800 text-stone-300'
+                    : 'bg-[#EAE2D0] text-[#4A3F35]'
+                }`}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3 overflow-y-auto pr-1 text-left text-xs sm:text-sm leading-relaxed">
+              <div
+                className={`rounded-2xl border p-3.5 ${
+                  isDarkMode
+                    ? 'bg-stone-950/70 border-stone-800'
+                    : 'bg-[#FDFBF7] border-[#E2D9C8]'
+                }`}
+              >
+                <div className="font-bold text-sm mb-1 text-[#B85D3B] dark:text-amber-400">
+                  1. 십자말풀이 규칙
+                </div>
+                <p className="opacity-90 break-keep">
+                  칸을 눌러 가로·세로 문제 설명을 확인하고 정답 단어를 채워 넣으세요. 한 단어를 완성할 때마다 <strong>5코인</strong>을 획득하고 다음 번호의 단어로 자동 이동합니다.
+                </p>
+              </div>
+
+              <div
+                className={`rounded-2xl border p-3.5 ${
+                  isDarkMode
+                    ? 'bg-stone-950/70 border-stone-800'
+                    : 'bg-[#FDFBF7] border-[#E2D9C8]'
+                }`}
+              >
+                <div className="font-bold text-sm mb-1 text-[#B85D3B] dark:text-amber-400">
+                  2. 손글씨 & 키보드 입력
+                </div>
+                <p className="opacity-90 break-keep">
+                  필기 영역에 한글 한 글자를 직접 쓰면 자동으로 인식되어 칸에 입력됩니다. <strong>설정</strong>에서 손글씨 자동 입력 대기 시간(기본 1.5초)을 조절하거나 <strong>키보드 타이핑 모드</strong>로 전환할 수 있습니다.
+                </p>
+              </div>
+
+              <div
+                className={`rounded-2xl border p-3.5 ${
+                  isDarkMode
+                    ? 'bg-stone-950/70 border-stone-800'
+                    : 'bg-[#FDFBF7] border-[#E2D9C8]'
+                }`}
+              >
+                <div className="font-bold text-sm mb-1 text-[#B85D3B] dark:text-amber-400">
+                  3. 힌트와 클리어 표시
+                </div>
+                <p className="opacity-90 break-keep">
+                  어려운 문제는 코인을 사용해 <strong>한 글자 힌트({HINT_LETTER_COST}코인)</strong> 또는 <strong>한 단어 힌트({HINT_WORD_COST}코인)</strong>를 쓸 수 있습니다. 힌트를 쓰지 않고 풀면 스테이지에 <strong>색이 채워진 체크 원</strong>이, 힌트를 사용해서 풀면 <strong>안쪽이 빈 동그라미 체크</strong>가 표시됩니다.
+                </p>
+              </div>
+
+              <div
+                className={`rounded-2xl border p-3.5 ${
+                  isDarkMode
+                    ? 'bg-stone-950/70 border-stone-800'
+                    : 'bg-[#FDFBF7] border-[#E2D9C8]'
+                }`}
+              >
+                <div className="font-bold text-sm mb-1 text-[#B85D3B] dark:text-amber-400">
+                  4. 나만의 스테이지 생성 & 선택 삭제
+                </div>
+                <p className="opacity-90 break-keep">
+                  스테이지 목록의 <strong>+</strong> 버튼으로 격자 크기와 단어 수를 정해 새 스테이지를 만들 수 있으며, <strong>격자 크기가 클수록 긴 단어가 나올 확률이 높아집니다.</strong> 상단의 <strong>스테이지 삭제</strong> 버튼으로 직접 만든 스테이지를 선택하여 삭제할 수 있습니다.
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setIsHowToPlayOpen(false)}
+              className={`mt-4 w-full min-h-[46px] rounded-2xl font-bold text-sm shrink-0 ${
+                isDarkMode
+                  ? 'bg-amber-600 text-stone-950 hover:bg-amber-500'
+                  : 'bg-[#B85D3B] text-white hover:bg-[#9E4B2C]'
+              }`}
+            >
+              확인
+            </button>
           </div>
         </div>
       )}
@@ -2152,6 +2664,8 @@ export default function App() {
         elapsedSeconds={elapsedSeconds}
         wordRewardTotal={runWordRewardEarned}
         clearBonus={currentPuzzle.clearReward}
+        letterHintCount={runLetterHintCount}
+        wordHintCount={runWordHintCount}
         hasNextStage={hasNextStage}
         onNextStage={() => {
           if (hasNextStage) {

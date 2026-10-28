@@ -6,6 +6,20 @@
   --font-mono: 'IBM Plex Sans KR', 'JetBrains Mono', monospace;
 }
 
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.app-viewport {
+  height: 100%;
+  height: 100vh;
+  height: 100dvh;
+}
+
 body, h1, h2, h3, .font-serif, .font-mono {
   font-family: 'IBM Plex Sans KR', -apple-system, BlinkMacSystemFont, sans-serif !important;
   -webkit-font-smoothing: antialiased;

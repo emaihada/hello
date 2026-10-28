@@ -1,5 +1,5 @@
 import React from 'react';
-import { Clock, Coins, ArrowRight, RotateCcw, List } from 'lucide-react';
+import { Clock, Coins, ArrowRight, RotateCcw, List, Lightbulb, Sparkles } from 'lucide-react';
 import { formatTimerMMSS } from '../game/rules.ts';
 
 interface StageClearModalProps {
@@ -9,6 +9,8 @@ interface StageClearModalProps {
   elapsedSeconds: number;
   wordRewardTotal: number;
   clearBonus: number;
+  letterHintCount?: number;
+  wordHintCount?: number;
   hasNextStage: boolean;
   onNextStage: () => void;
   onReplay: () => void;
@@ -22,6 +24,8 @@ export const StageClearModal: React.FC<StageClearModalProps> = ({
   elapsedSeconds,
   wordRewardTotal,
   clearBonus,
+  letterHintCount = 0,
+  wordHintCount = 0,
   hasNextStage,
   onNextStage,
   onReplay,
@@ -130,42 +134,79 @@ export const StageClearModal: React.FC<StageClearModalProps> = ({
         <h2 id="stage-clear-title" className="text-xl font-bold mb-1">
           참 잘하셨습니다!
         </h2>
-        <div className={`text-xs font-semibold mb-4 ${isDarkMode ? 'text-stone-400' : 'text-[#6E6256]'}`}>
+        <div className={`text-xs font-semibold mb-3.5 ${isDarkMode ? 'text-stone-400' : 'text-[#6E6256]'}`}>
           {puzzleTitle}
         </div>
 
         {/* 푼 시간 & 얻은 재화 (#11) */}
-        <div className="grid grid-cols-2 gap-2.5 mb-4">
+        <div className="grid grid-cols-2 gap-2.5 mb-2.5">
           <div
-            className={`rounded-2xl border p-3 flex flex-col items-center ${
+            className={`rounded-2xl border p-2.5 flex flex-col items-center ${
               isDarkMode ? 'bg-stone-800/80 border-stone-700' : 'bg-[#F2ECE0] border-[#DCD2C0]'
             }`}
           >
             <div
-              className={`text-xs font-semibold flex items-center gap-1 mb-1 ${
+              className={`text-xs font-semibold flex items-center gap-1 mb-0.5 ${
                 isDarkMode ? 'text-stone-400' : 'text-[#6E6256]'
               }`}
             >
               <Clock className="w-3.5 h-3.5" />
               <span>풀이 시간</span>
             </div>
-            <div className="text-xl font-bold font-mono tabular-nums">
+            <div className="text-lg font-bold font-mono tabular-nums">
               {formatTimerMMSS(elapsedSeconds)}
             </div>
           </div>
 
           <div
-            className={`rounded-2xl border p-3 flex flex-col items-center ${
+            className={`rounded-2xl border p-2.5 flex flex-col items-center ${
               isDarkMode
                 ? 'bg-amber-950/50 border-amber-800/70 text-amber-200'
                 : 'bg-[#F6EBD6] border-[#DFC99F] text-[#7A3E18]'
             }`}
           >
-            <div className="text-xs font-semibold flex items-center gap-1 mb-1">
+            <div className="text-xs font-semibold flex items-center gap-1 mb-0.5">
               <Coins className="w-3.5 h-3.5" />
               <span>획득 재화</span>
             </div>
-            <div className="text-xl font-bold font-mono tabular-nums">+{totalEarned}</div>
+            <div className="text-lg font-bold font-mono tabular-nums">+{totalEarned}</div>
+          </div>
+        </div>
+
+        {/* 사용한 힌트 횟수 (한 글자 힌트 / 한 단어 힌트) */}
+        <div className="grid grid-cols-2 gap-2.5 mb-4">
+          <div
+            data-testid="clear-letter-hint-count"
+            className={`rounded-2xl border px-3 py-2 flex items-center justify-between text-xs font-bold ${
+              isDarkMode
+                ? 'bg-stone-800/60 border-stone-700 text-stone-200'
+                : 'bg-[#F5EFE2] border-[#DCD2C0] text-[#4A3F35]'
+            }`}
+          >
+            <span className="flex items-center gap-1">
+              <Lightbulb className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+              <span>한 글자 힌트</span>
+            </span>
+            <span className="font-mono font-extrabold tabular-nums">
+              {letterHintCount}번
+            </span>
+          </div>
+
+          <div
+            data-testid="clear-word-hint-count"
+            className={`rounded-2xl border px-3 py-2 flex items-center justify-between text-xs font-bold ${
+              isDarkMode
+                ? 'bg-stone-800/60 border-stone-700 text-stone-200'
+                : 'bg-[#F5EFE2] border-[#DCD2C0] text-[#4A3F35]'
+            }`}
+          >
+            <span className="flex items-center gap-1">
+              <Sparkles className="w-3.5 h-3.5 text-[#B85D3B] dark:text-amber-400 shrink-0" />
+              <span>한 단어 힌트</span>
+            </span>
+            <span className="font-mono font-extrabold tabular-nums">
+              {wordHintCount}번
+            </span>
           </div>
         </div>
 

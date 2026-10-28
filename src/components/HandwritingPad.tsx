@@ -4,6 +4,7 @@ import {
   type Stroke,
   type StrokePoint,
   recognizeHandwritingCandidates,
+  getSyllableTemplates,
 } from '../game/rules.ts';
 import { soundManager } from '../game/audio.ts';
 
@@ -29,15 +30,23 @@ export const HandwritingPad: React.FC<HandwritingPadProps> = ({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const isDrawingRef = useRef<boolean>(false);
   const currentStrokeRef = useRef<StrokePoint[]>([]);
+  const lastScratchSoundTimeRef = useRef<number>(0);
   const autoCommitTimerRef = useRef<number | null>(null);
   const [strokes, setStrokes] = useState<Stroke[]>([]);
-  const [currentStroke, setCurrentStroke] = useState<StrokePoint[]>([]);
   const [isAutoCommitting, setIsAutoCommitting] = useState<boolean>(false);
 
   const onSelectCandidateRef = useRef(onSelectCandidate);
   useEffect(() => {
     onSelectCandidateRef.current = onSelectCandidate;
   }, [onSelectCandidate]);
+
+  // Pre-warm syllable templates asynchronously on mount so the first stroke never lags
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      getSyllableTemplates();
+    }, 10);
+    return () => window.clearTimeout(id);
+  }, []);
 
   // Clear auto-commit timer helper
   const cancelAutoCommit = useCallback(() => {
@@ -50,24 +59,84 @@ export const HandwritingPad: React.FC<HandwritingPadProps> = ({
 
   const [commitKey, setCommitKey] = useState<number>(0);
 
+  const renderCanvas = useCallback(
+    (activeStrokeOverride?: StrokePoint[]) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const width = canvas.width;
+      const height = canvas.height;
+
+      ctx.clearRect(0, 0, width, height);
+
+      ctx.fillStyle = isDarkMode ? '#262220' : '#FCF9F2';
+      ctx.fillRect(0, 0, width, height);
+
+      // 십자(+) 점선 가이드 (#12)
+      ctx.save();
+      ctx.strokeStyle = isDarkMode ? 'rgba(214, 199, 178, 0.3)' : 'rgba(168, 144, 116, 0.48)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 5]);
+
+      ctx.beginPath();
+      ctx.moveTo(0, height / 2);
+      ctx.lineTo(width, height / 2);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(width / 2, 0);
+      ctx.lineTo(width / 2, height);
+      ctx.stroke();
+      ctx.restore();
+
+      const inProgress = activeStrokeOverride ?? currentStrokeRef.current;
+      const allStrokes =
+        inProgress.length > 0 ? [...strokes, inProgress] : strokes;
+      ctx.save();
+      ctx.strokeStyle = isDarkMode ? '#F5F0E6' : '#231F1C';
+      ctx.lineWidth = 5.5;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      for (const stroke of allStrokes) {
+        if (stroke.length === 0) continue;
+        ctx.beginPath();
+        ctx.moveTo(stroke[0].x, stroke[0].y);
+        for (let i = 1; i < stroke.length; i++) {
+          const midX = (stroke[i - 1].x + stroke[i].x) / 2;
+          const midY = (stroke[i - 1].y + stroke[i].y) / 2;
+          ctx.quadraticCurveTo(stroke[i - 1].x, stroke[i - 1].y, midX, midY);
+        }
+        if (stroke.length === 1) {
+          ctx.lineTo(stroke[0].x + 0.5, stroke[0].y + 0.5);
+        } else {
+          const last = stroke[stroke.length - 1];
+          ctx.lineTo(last.x, last.y);
+        }
+        ctx.stroke();
+      }
+      ctx.restore();
+    },
+    [strokes, isDarkMode]
+  );
+
   useEffect(() => {
     cancelAutoCommit();
     isDrawingRef.current = false;
     currentStrokeRef.current = [];
     setStrokes([]);
-    setCurrentStroke([]);
   }, [selectedCellKey, cancelAutoCommit]);
 
-  const activeStrokes =
-    currentStroke.length > 0 ? [...strokes, currentStroke] : strokes;
-
-  // Memoize stroke signature to avoid unnecessary new array instances of candidates
+  // Only run handwriting recognition when completed strokes change (never during pointermove!)
   const strokesKey = useMemo(() => {
-    return `${strokes.length}-${strokes.reduce((acc, s) => acc + s.length, 0)}-${currentStroke.length}`;
-  }, [strokes, currentStroke]);
+    return `${strokes.length}-${strokes.reduce((acc, s) => acc + s.length, 0)}`;
+  }, [strokes]);
 
   const candidates = useMemo(() => {
-    return recognizeHandwritingCandidates(activeStrokes, contextSyllables);
+    if (strokes.length === 0) return [];
+    return recognizeHandwritingCandidates(strokes, contextSyllables);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [strokesKey, contextSyllables]);
 
@@ -87,13 +156,12 @@ export const HandwritingPad: React.FC<HandwritingPadProps> = ({
       autoCommitTimerRef.current = null;
     }
     setIsAutoCommitting(false);
-    setStrokes([]);
     currentStrokeRef.current = [];
-    setCurrentStroke([]);
+    setStrokes([]);
     onSelectCandidateRef.current?.(char);
   }, []);
 
-  // Auto-commit: 1 second after user finishes drawing a stroke, auto-enter top candidate (#1)
+  // Auto-commit: after user finishes drawing a stroke, auto-enter top candidate (#1)
   useEffect(() => {
     if (isDrawingRef.current || strokes.length === 0) {
       cancelAutoCommit();
@@ -106,7 +174,6 @@ export const HandwritingPad: React.FC<HandwritingPadProps> = ({
       return;
     }
 
-    // Start configurable auto-commit countdown (default 2.5s)
     if (autoCommitTimerRef.current !== null) {
       window.clearTimeout(autoCommitTimerRef.current);
     }
@@ -126,65 +193,6 @@ export const HandwritingPad: React.FC<HandwritingPadProps> = ({
       }
     };
   }, [strokes, candidates, autoCommitDelaySec, commitTopCandidate, cancelAutoCommit]);
-
-  const renderCanvas = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const width = canvas.width;
-    const height = canvas.height;
-
-    ctx.clearRect(0, 0, width, height);
-
-    ctx.fillStyle = isDarkMode ? '#262220' : '#FCF9F2';
-    ctx.fillRect(0, 0, width, height);
-
-    // 십자(+) 점선 가이드 (#12)
-    ctx.save();
-    ctx.strokeStyle = isDarkMode ? 'rgba(214, 199, 178, 0.3)' : 'rgba(168, 144, 116, 0.48)';
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([5, 5]);
-
-    ctx.beginPath();
-    ctx.moveTo(0, height / 2);
-    ctx.lineTo(width, height / 2);
-    ctx.stroke();
-
-    ctx.beginPath();
-    ctx.moveTo(width / 2, 0);
-    ctx.lineTo(width / 2, height);
-    ctx.stroke();
-    ctx.restore();
-
-    const allStrokes =
-      currentStroke.length > 0 ? [...strokes, currentStroke] : strokes;
-    ctx.save();
-    ctx.strokeStyle = isDarkMode ? '#F5F0E6' : '#231F1C';
-    ctx.lineWidth = 5.5;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-
-    for (const stroke of allStrokes) {
-      if (stroke.length === 0) continue;
-      ctx.beginPath();
-      ctx.moveTo(stroke[0].x, stroke[0].y);
-      for (let i = 1; i < stroke.length; i++) {
-        const midX = (stroke[i - 1].x + stroke[i].x) / 2;
-        const midY = (stroke[i - 1].y + stroke[i].y) / 2;
-        ctx.quadraticCurveTo(stroke[i - 1].x, stroke[i - 1].y, midX, midY);
-      }
-      if (stroke.length === 1) {
-        ctx.lineTo(stroke[0].x + 0.5, stroke[0].y + 0.5);
-      } else {
-        const last = stroke[stroke.length - 1];
-        ctx.lineTo(last.x, last.y);
-      }
-      ctx.stroke();
-    }
-    ctx.restore();
-  }, [strokes, currentStroke, isDarkMode]);
 
   useEffect(() => {
     renderCanvas();
@@ -209,8 +217,9 @@ export const HandwritingPad: React.FC<HandwritingPadProps> = ({
     const pt = getCanvasPoint(e);
     isDrawingRef.current = true;
     currentStrokeRef.current = [pt];
-    setCurrentStroke([pt]);
-    soundManager.playPaperScratch(1.1);
+    renderCanvas(currentStrokeRef.current);
+    lastScratchSoundTimeRef.current = performance.now();
+    soundManager.playPaperScratch(1.0);
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -221,43 +230,46 @@ export const HandwritingPad: React.FC<HandwritingPadProps> = ({
     if (cur.length > 0) {
       const last = cur[cur.length - 1];
       const dist = Math.hypot(pt.x - last.x, pt.y - last.y);
-      if (dist > 2.5) {
-        soundManager.playPaperScratch(Math.min(1.4, dist / 14));
-        const next = [...cur, pt];
-        currentStrokeRef.current = next;
-        setCurrentStroke(next);
+      if (dist > 2.2) {
+        cur.push(pt);
+        renderCanvas(cur);
+        const now = performance.now();
+        if (now - lastScratchSoundTimeRef.current > 80) {
+          lastScratchSoundTimeRef.current = now;
+          soundManager.playPaperScratch(Math.min(1.3, dist / 14));
+        }
       }
     } else {
       currentStrokeRef.current = [pt];
-      setCurrentStroke([pt]);
+      renderCanvas(currentStrokeRef.current);
     }
   };
 
   const handlePointerUp = () => {
     if (!isDrawingRef.current) return;
     isDrawingRef.current = false;
-    const finished = currentStrokeRef.current;
+    const finished = [...currentStrokeRef.current];
+    currentStrokeRef.current = [];
     if (finished.length > 0) {
       setStrokes((prev) => [...prev, finished]);
-      currentStrokeRef.current = [];
-      setCurrentStroke([]);
+    } else {
+      renderCanvas([]);
     }
   };
 
   const handleUndoStroke = () => {
     cancelAutoCommit();
     soundManager.playPaperScratch(0.6);
-    setStrokes((prev) => prev.slice(0, -1));
     currentStrokeRef.current = [];
-    setCurrentStroke([]);
+    setStrokes((prev) => prev.slice(0, -1));
   };
 
   const handleClearAllStrokes = () => {
     cancelAutoCommit();
     soundManager.playPaperScratch(0.8);
-    setStrokes([]);
     currentStrokeRef.current = [];
-    setCurrentStroke([]);
+    setStrokes([]);
+    renderCanvas([]);
     if (currentCellInput) {
       onClearCell();
     }
@@ -265,10 +277,9 @@ export const HandwritingPad: React.FC<HandwritingPadProps> = ({
 
   const handleCandidateClick = (char: string) => {
     cancelAutoCommit();
-    onSelectCandidate(char);
-    setStrokes([]);
     currentStrokeRef.current = [];
-    setCurrentStroke([]);
+    setStrokes([]);
+    onSelectCandidate(char);
   };
 
   return (

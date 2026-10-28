@@ -77,6 +77,10 @@ export class Resources {
     Resources.customJsonText = jsonText;
   }
 
+  public static hasCustomWordcrossJson(): boolean {
+    return Resources.customJsonText !== null;
+  }
+
   public static Load(path: string): { text: string } {
     if (
       path === 'wordcross_words-v2' ||
@@ -120,6 +124,10 @@ export class CrosswordStageGenerator {
   }
 
   public loadFromResources(): void {
+    if (!Resources.hasCustomWordcrossJson()) {
+      this.initializeFromDatabase(DEFAULT_WORDCROSS_DATABASE);
+      return;
+    }
     const textAsset = Resources.Load('wordcross_words-v2');
     const parsed = JsonUtility.FromJson<WordDatabase>(textAsset.text);
     this.initializeFromDatabase(parsed);
@@ -670,7 +678,7 @@ export function convertWordDataToPuzzle(
     size: gridSize,
     words,
     clearReward: 100 + Math.min(100, stageNumber * 10),
-    wordReward: 15,
+    wordReward: 5,
   };
 }
 
