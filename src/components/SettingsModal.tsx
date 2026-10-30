@@ -14,12 +14,14 @@ import {
 interface SettingsModalProps {
   isOpen: boolean;
   inputMode: 'handwriting' | 'typing';
+  isOffline?: boolean;
   bgmEnabled: boolean;
   sfxEnabled: boolean;
   isDarkMode: boolean;
   autoCommitDelaySec: number;
   onChangeInputMode: (mode: 'handwriting' | 'typing') => void;
   onChangeAutoCommitDelay: (sec: number) => void;
+  onAttemptOfflineHandwriting?: () => void;
   onToggleBgm: () => void;
   onToggleSfx: () => void;
   onToggleDarkMode: () => void;
@@ -29,12 +31,14 @@ interface SettingsModalProps {
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   isOpen,
   inputMode,
+  isOffline = false,
   bgmEnabled,
   sfxEnabled,
   isDarkMode,
   autoCommitDelaySec,
   onChangeInputMode,
   onChangeAutoCommitDelay,
+  onAttemptOfflineHandwriting,
   onToggleBgm,
   onToggleSfx,
   onToggleDarkMode,
@@ -59,7 +63,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         {/* Header */}
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
-            <Settings className="w-5 h-5 text-[#B85D3B] dark:text-amber-400" />
+            <Settings className="w-5 h-5 text-[#5C4332] dark:text-amber-400" />
             <h2 id="settings-modal-title" className="text-lg font-bold">
               설정
             </h2>
@@ -86,17 +90,32 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               isDarkMode ? 'bg-stone-800/70 border-stone-700' : 'bg-[#FDFBF7] border-[#DCD2C0]'
             }`}
           >
-            <div className="text-xs font-bold mb-2 opacity-80">입력 방식</div>
+            <div className="text-xs font-bold mb-2 opacity-80 flex items-center justify-between">
+              <span>입력 방식</span>
+              {isOffline && (
+                <span className="text-[11px] font-normal text-rose-500 dark:text-rose-400">
+                  오프라인 상태 (손글씨 불가)
+                </span>
+              )}
+            </div>
             <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
-                onClick={() => onChangeInputMode('handwriting')}
+                onClick={() => {
+                  if (isOffline) {
+                    onAttemptOfflineHandwriting?.();
+                    return;
+                  }
+                  onChangeInputMode('handwriting');
+                }}
                 aria-pressed={inputMode === 'handwriting'}
-                className={`min-h-[46px] rounded-xl border font-bold text-sm flex items-center justify-center gap-1.5 transition-all whitespace-nowrap shrink-0 ${
-                  inputMode === 'handwriting'
+                className={`min-h-[46px] rounded-xl border font-bold text-sm flex items-center justify-center gap-1.5 transition-all whitespace-nowrap shrink-0 active:scale-95 ${
+                  isOffline
+                    ? 'bg-rose-500/10 border-rose-300 dark:border-rose-900/60 text-rose-700 dark:text-rose-300 hover:bg-rose-500/20'
+                    : inputMode === 'handwriting'
                     ? isDarkMode
-                      ? 'bg-amber-600 border-amber-500 text-stone-950'
-                      : 'bg-[#B85D3B] border-[#9A4829] text-white'
+                      ? 'bg-[#CE8E54] border-[#E2A872] text-[#FFFDF9]'
+                      : 'bg-[#CC8B52] border-[#B6763E] text-[#FFFDF9]'
                     : isDarkMode
                     ? 'bg-stone-900 border-stone-700 text-stone-300'
                     : 'bg-[#F3ECE0] border-[#D5CBB8] text-[#4A3F35]'
@@ -104,6 +123,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               >
                 <PenTool className="w-4 h-4" />
                 <span>손글씨</span>
+                {isOffline && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-rose-500/20 text-rose-700 dark:text-rose-300 font-bold">
+                    불가
+                  </span>
+                )}
               </button>
 
               <button
@@ -113,8 +137,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 className={`min-h-[46px] rounded-xl border font-bold text-sm flex items-center justify-center gap-1.5 transition-all whitespace-nowrap shrink-0 ${
                   inputMode === 'typing'
                     ? isDarkMode
-                      ? 'bg-amber-600 border-amber-500 text-stone-950'
-                      : 'bg-[#B85D3B] border-[#9A4829] text-white'
+                      ? 'bg-[#CE8E54] border-[#E2A872] text-[#FFFDF9]'
+                      : 'bg-[#CC8B52] border-[#B6763E] text-[#FFFDF9]'
                     : isDarkMode
                     ? 'bg-stone-900 border-stone-700 text-stone-300'
                     : 'bg-[#F3ECE0] border-[#D5CBB8] text-[#4A3F35]'
@@ -189,7 +213,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           >
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 font-bold text-sm">
-                <Music className="w-4 h-4 text-[#B85D3B] dark:text-amber-400" />
+                <Music className="w-4 h-4 text-[#5C4332] dark:text-amber-400" />
                 <span>배경음악</span>
               </div>
               <button
@@ -218,7 +242,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               }`}
             >
               <div className="flex items-center gap-2 font-bold text-sm">
-                <Volume2 className="w-4 h-4 text-[#B85D3B] dark:text-amber-400" />
+                <Volume2 className="w-4 h-4 text-[#5C4332] dark:text-amber-400" />
                 <span>효과음</span>
               </div>
               <button
@@ -252,7 +276,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               {isDarkMode ? (
                 <Moon className="w-4 h-4 text-amber-400" />
               ) : (
-                <Sun className="w-4 h-4 text-[#B85D3B]" />
+                <Sun className="w-4 h-4 text-[#5C4332]" />
               )}
               <span>다크모드</span>
             </div>

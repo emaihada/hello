@@ -201,7 +201,7 @@ export const StageClearModal: React.FC<StageClearModalProps> = ({
             }`}
           >
             <span className="flex items-center gap-1">
-              <Sparkles className="w-3.5 h-3.5 text-[#B85D3B] dark:text-amber-400 shrink-0" />
+              <Sparkles className="w-3.5 h-3.5 text-[#5C4332] dark:text-amber-400 shrink-0" />
               <span>한 단어 힌트</span>
             </span>
             <span className="font-mono font-extrabold tabular-nums">
@@ -218,8 +218,8 @@ export const StageClearModal: React.FC<StageClearModalProps> = ({
               onClick={onNextStage}
               className={`w-full min-h-[48px] rounded-2xl font-bold text-sm flex items-center justify-center gap-2 shadow-md transition-transform active:scale-98 whitespace-nowrap shrink-0 ${
                 isDarkMode
-                  ? 'bg-amber-600 text-stone-950 hover:bg-amber-500'
-                  : 'bg-[#B85D3B] text-white hover:bg-[#9E4B2C]'
+                  ? 'bg-[#CE8E54] text-[#FFFDF9] hover:bg-[#BF8047]'
+                  : 'bg-[#CC8B52] text-[#FFFDF9] hover:bg-[#BC7C44]'
               }`}
             >
               <span>다음 스테이지</span>

@@ -30,31 +30,51 @@
     </style>
     <script data-apk-raw-fallback>
       window.__loadApkFallbackBundle = function () {
-        if (window.__apkFallbackLoaded) return;
+        if (
+          window.__ONGEUL_BOOTED__ ||
+          window.__ONGEUL_ROOT_MOUNTED__ ||
+          window.__apkFallbackLoaded
+        ) {
+          return;
+        }
+        var rootEl = document.getElementById('root');
+        if (rootEl && rootEl.children && rootEl.children.length > 0) return;
         window.__apkFallbackLoaded = true;
-        var cssLink = document.createElement('link');
-        cssLink.rel = 'stylesheet';
-        cssLink.href = './public/apk-bundle.css';
-        cssLink.onerror = function () {
-          var altCss = document.createElement('link');
-          altCss.rel = 'stylesheet';
-          altCss.href = './apk-bundle.css';
-          document.head.appendChild(altCss);
-        };
-        document.head.appendChild(cssLink);
 
-        var jsScript = document.createElement('script');
-        jsScript.src = './public/apk-bundle.js';
-        jsScript.onerror = function () {
-          var altJs = document.createElement('script');
-          altJs.src = './apk-bundle.js';
-          document.body.appendChild(altJs);
-        };
-        document.body.appendChild(jsScript);
+        var cssCandidates = ['./apk-bundle.css', './public/apk-bundle.css', './assets/index.css'];
+        function tryLoadCss(idx) {
+          if (idx >= cssCandidates.length) return;
+          var link = document.createElement('link');
+          link.rel = 'stylesheet';
+          link.href = cssCandidates[idx];
+          link.onerror = function () {
+            tryLoadCss(idx + 1);
+          };
+          document.head.appendChild(link);
+        }
+        tryLoadCss(0);
+
+        var jsCandidates = ['./apk-bundle.js', './public/apk-bundle.js', './assets/index.js'];
+        function tryLoadJs(idx) {
+          if (idx >= jsCandidates.length) return;
+          if (window.__ONGEUL_BOOTED__ || window.__ONGEUL_ROOT_MOUNTED__) return;
+          var s = document.createElement('script');
+          s.src = jsCandidates[idx];
+          s.onerror = function () {
+            tryLoadJs(idx + 1);
+          };
+          (document.body || document.head).appendChild(s);
+        }
+        tryLoadJs(0);
       };
-      if (window.location.protocol === 'file:') {
-        window.addEventListener('DOMContentLoaded', window.__loadApkFallbackBundle);
-      }
+      window.addEventListener('DOMContentLoaded', function () {
+        var isViteDev = !!document.querySelector('script[src*="@vite/client"]');
+        if (!isViteDev || window.location.protocol === 'file:') {
+          setTimeout(function () {
+            window.__loadApkFallbackBundle();
+          }, 250);
+        }
+      });
     </script>
   </head>
   <body>

@@ -195,7 +195,7 @@ export class CrosswordStageGenerator {
   }
 
   /**
-   * Generates a deterministic crossword board for the given stageNumber.
+   * Generates a crossword board for the given stageNumber with random word selection.
    * Returns List<CrosswordWordData> with intersecting words.
    * Deprioritizes words in previouslyUsedWords so earlier stages' words are avoided whenever possible.
    */
@@ -203,26 +203,41 @@ export class CrosswordStageGenerator {
     stageNumber: number,
     customGridSize: number = GRID_SIZE,
     customTargetWords?: number,
-    previouslyUsedWords?: Iterable<string>
+    previouslyUsedWords?: Iterable<string>,
+    customSeed?: number
   ): CrosswordWordData[] {
     const safeStage = Math.max(1, Math.floor(stageNumber));
     const gridSize = Math.max(8, Math.min(25, Math.floor(customGridSize || GRID_SIZE)));
     const excludedSet = new Set<string>(previouslyUsedWords ?? []);
 
-    // Deterministically target word count if not explicitly provided
+    // Target word count if not explicitly provided
+    const baseEntropy =
+      customSeed !== undefined
+        ? customSeed
+        : typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function'
+        ? crypto.getRandomValues(new Uint32Array(1))[0]
+        : (Math.floor(Math.random() * 0x7fffffff) ^
+            Math.floor(
+              (typeof performance !== 'undefined' ? performance.now() : Date.now()) * 1000
+            )) >>>
+          0;
+
     const targetCount =
       customTargetWords !== undefined
         ? Math.max(5, Math.min(35, Math.floor(customTargetWords)))
         : MIN_WORDS_PER_STAGE +
-          ((safeStage * 7) % (MAX_WORDS_PER_STAGE - MIN_WORDS_PER_STAGE + 1));
+          (Math.abs(baseEntropy + safeStage * 7) %
+            (MAX_WORDS_PER_STAGE - MIN_WORDS_PER_STAGE + 1));
     const minTargetAccept = Math.min(targetCount, 12);
 
     let bestResult: CrosswordWordData[] = [];
     let bestScore = -Infinity;
 
-    // Try up to 6 deterministic sub-passes from the stage seed to ensure words
+    // Try up to 6 sub-passes from the random seed to build a rich intersecting board
     for (let attempt = 0; attempt < 6; attempt++) {
-      this.random.InitState(safeStage * 10007 + attempt * 7919);
+      this.random.InitState(
+        (baseEntropy ^ (safeStage * 10007 + attempt * 7919 + attempt * 104729)) >>> 0
+      );
       const runResult = this.tryBuildGrid(targetCount, gridSize, excludedSet);
       const reusedCount = runResult.words.reduce(
         (acc, w) => acc + (excludedSet.has(w.word) ? 1 : 0),
@@ -384,9 +399,19 @@ export class CrosswordStageGenerator {
       return { words: [], totalIntersections: 0 };
     }
 
-    const startX = Math.floor((size - firstWordObj.chars.length) / 2);
-    const startY = Math.floor(size / 2);
-    placeWordOnGrid(firstWordObj.entry, startX, startY, 'Horizontal');
+    const firstDir: CrosswordDirection =
+      this.random.Range(0, 2) === 0 ? 'Horizontal' : 'Vertical';
+    const jitterA = this.random.Range(-2, 3);
+    const jitterB = this.random.Range(-2, 3);
+    const startX =
+      firstDir === 'Horizontal'
+        ? Math.max(0, Math.min(size - firstWordObj.chars.length, Math.floor((size - firstWordObj.chars.length) / 2) + jitterA))
+        : Math.max(1, Math.min(size - 2, Math.floor(size / 2) + jitterB));
+    const startY =
+      firstDir === 'Vertical'
+        ? Math.max(0, Math.min(size - firstWordObj.chars.length, Math.floor((size - firstWordObj.chars.length) / 2) + jitterA))
+        : Math.max(1, Math.min(size - 2, Math.floor(size / 2) + jitterB));
+    placeWordOnGrid(firstWordObj.entry, startX, startY, firstDir);
 
     // 2. Iteratively grow intersecting words using the Dictionary<char, List<WordEntry>> index
     let stalledRounds = 0;
@@ -696,26 +721,30 @@ export function generateCrosswordWordDataList(
   stageNumber: number,
   gridSize: number = GRID_SIZE,
   targetWordCount?: number,
-  previouslyUsedWords?: Iterable<string>
+  previouslyUsedWords?: Iterable<string>,
+  customSeed?: number
 ): CrosswordWordData[] {
   return getSharedCrosswordGenerator().generateStage(
     stageNumber,
     gridSize,
     targetWordCount,
-    previouslyUsedWords
+    previouslyUsedWords,
+    customSeed
   );
 }
 
 export function generateOfficialStagePuzzle(
   stageNumber: number,
   gridSize: number = GRID_SIZE,
-  previouslyUsedWords?: Iterable<string>
+  previouslyUsedWords?: Iterable<string>,
+  customSeed?: number
 ): CrosswordPuzzle {
   const wordDataList = generateCrosswordWordDataList(
     stageNumber,
     gridSize,
     undefined,
-    previouslyUsedWords
+    previouslyUsedWords,
+    customSeed
   );
   return convertWordDataToPuzzle(stageNumber, wordDataList, gridSize);
 }

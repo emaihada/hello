@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#F7F3E9" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <title>손글씨 십자말풀이</title>
+    <meta name="description" content="실제 한글 획 손글씨 인식과 타이핑, 두 손가락 줌, 스테이지 진행 및 자동 저장 기능을 갖춘 웜톤 한글 십자말풀이 게임" />
+    <meta property="og:title" content="손글씨 십자말풀이" />
+    <meta property="og:description" content="실제 한글 획 손글씨 인식과 타이핑, 두 손가락 줌, 스테이지 진행 및 자동 저장 기능을 갖춘 웜톤 한글 십자말풀이 게임" />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" />
+    <link href="https://fonts.googleapis.com/css2?family=Gowun+Batang:wght@400;700&family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet" />
+    <style>
+      html, body, #root {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        padding: 0;
+        background-color: #F7F3E9;
+        color: #2C2520;
+        overflow: hidden;
+        -webkit-tap-highlight-color: transparent;
+      }
+    </style>
+    <script data-apk-raw-fallback>
+      window.__loadApkFallbackBundle = function () {
+        if (
+          window.__ONGEUL_BOOTED__ ||
+          window.__ONGEUL_ROOT_MOUNTED__ ||
+          window.__apkFallbackLoaded
+        ) {
+          return;
+        }
+        var rootEl = document.getElementById('root');
+        if (rootEl && rootEl.children && rootEl.children.length > 0) return;
+        window.__apkFallbackLoaded = true;
+
+        var cssCandidates = ['./apk-bundle.css', './public/apk-bundle.css', './assets/index.css'];
+        function tryLoadCss(idx) {
+          if (idx >= cssCandidates.length) return;
+          var link = document.createElement('link');
+          link.rel = 'stylesheet';
+          link.href = cssCandidates[idx];
+          link.onerror = function () {
+            tryLoadCss(idx + 1);
+          };
+          document.head.appendChild(link);
+        }
+        tryLoadCss(0);
+
+        var jsCandidates = ['./apk-bundle.js', './public/apk-bundle.js', './assets/index.js'];
+        function tryLoadJs(idx) {
+          if (idx >= jsCandidates.length) return;
+          if (window.__ONGEUL_BOOTED__ || window.__ONGEUL_ROOT_MOUNTED__) return;
+          var s = document.createElement('script');
+          s.src = jsCandidates[idx];
+          s.onerror = function () {
+            tryLoadJs(idx + 1);
+          };
+          (document.body || document.head).appendChild(s);
+        }
+        tryLoadJs(0);
+      };
+      window.addEventListener('DOMContentLoaded', function () {
+        var isViteDev = !!document.querySelector('script[src*="@vite/client"]');
+        if (!isViteDev || window.location.protocol === 'file:') {
+          setTimeout(function () {
+            window.__loadApkFallbackBundle();
+          }, 250);
+        }
+      });
+    </script>
+    
+    <link rel="stylesheet" href="./assets/index.css">
+  </head>
+  <body>
+    <div id="root"></div>
+      <script defer src="./assets/index.js"></script>
+  </body>
+</html>
+
+

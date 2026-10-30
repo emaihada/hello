@@ -15,6 +15,9 @@ import {
   Plus,
   Trash2,
   CircleHelp,
+  WifiOff,
+  PenTool,
+  Keyboard,
 } from 'lucide-react';
 import {
   STAGE_PUZZLES,
@@ -25,11 +28,7 @@ import {
 import {
   generateCrosswordWordDataList,
   convertWordDataToPuzzle,
-  getSharedCrosswordGenerator,
-  Resources,
-  JsonUtility,
 } from './game/wordcrossGenerator.ts';
-import type { WordDatabase } from './game/defaultWordcrossJson.ts';
 import {
   buildCrosswordGrid,
   applyCellInput,
@@ -72,6 +71,7 @@ interface SavedGameState {
   hintClearedStageIds?: string[];
   startedStageIds?: string[];
   unlockedStageIds?: string[];
+  baseStages?: CrosswordPuzzle[];
   customStages?: CrosswordPuzzle[];
   settings?: {
     inputMode?: 'handwriting' | 'typing';
@@ -130,6 +130,7 @@ function isSavedGridCompatibleWithPuzzle(
   puzzle: CrosswordPuzzle,
   selectedCell?: { row: number; col: number } | null
 ): grid is GridCell[][] {
+  if (!puzzle || typeof puzzle.size !== 'number' || !Array.isArray(puzzle.words)) return false;
   if (!Array.isArray(grid) || grid.length !== puzzle.size) return false;
   for (let r = 0; r < puzzle.size; r++) {
     const rowArr = grid[r];
@@ -174,11 +175,19 @@ export default function App() {
   );
 
   // Settings & How-to-Play Modal
-  const [inputMode, setInputMode] = useState<'handwriting' | 'typing'>(
-    initialSave?.settings?.inputMode ?? 'handwriting'
-  );
+  const [isOffline, setIsOffline] = useState<boolean>(() => {
+    return typeof navigator !== 'undefined' ? !navigator.onLine : false;
+  });
+  const [isOfflineNoticeOpen, setIsOfflineNoticeOpen] = useState<boolean>(false);
+
+  const [inputMode, setInputMode] = useState<'handwriting' | 'typing'>(() => {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      return 'typing';
+    }
+    return initialSave?.settings?.inputMode === 'typing' ? 'typing' : 'handwriting';
+  });
   const [autoCommitDelaySec, setAutoCommitDelaySec] = useState<number>(
-    initialSave?.settings?.autoCommitDelaySec ?? 1.5
+    Number(initialSave?.settings?.autoCommitDelaySec) || 1.5
   );
   const [bgmEnabled, setBgmEnabled] = useState<boolean>(
     initialSave?.settings?.bgmEnabled ?? true
@@ -192,6 +201,62 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [isHowToPlayOpen, setIsHowToPlayOpen] = useState<boolean>(false);
 
+  // 오프라인 상태 감지 및 손글씨 모드 자동 차단/타이핑 모드 강제 전환 함수
+  const triggerOfflineMode = useCallback((showAlert = true) => {
+    setIsOffline(true);
+    setInputMode('typing');
+    if (showAlert) {
+      soundManager.playWrongAlert();
+      setIsOfflineNoticeOpen(true);
+    }
+  }, []);
+
+  // 손글씨 모드로 전환 시도 핸들러 (오프라인 상태일 경우 전환을 차단하고 즉시 팝업 표시)
+  const handleAttemptSwitchToHandwriting = useCallback(() => {
+    const isNavOffline = typeof navigator !== 'undefined' && !navigator.onLine;
+    if (isOffline || isNavOffline) {
+      triggerOfflineMode(true);
+    } else {
+      soundManager.playSnapFit();
+      setInputMode('handwriting');
+    }
+  }, [isOffline, triggerOfflineMode]);
+
+  // 실시간 네트워크 상태 감지 (이벤트 리스너 + 주기적 폴링 하트비트)
+  useEffect(() => {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      triggerOfflineMode(true);
+    }
+
+    const handleOnline = () => {
+      setIsOffline(false);
+    };
+
+    const handleOffline = () => {
+      triggerOfflineMode(true);
+    };
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', handleOnline);
+      window.addEventListener('offline', handleOffline);
+    }
+
+    // 2초마다 네트워크 연결 상태 확인 (모바일 환경에서 이벤트 누락 대비)
+    const intervalId = window.setInterval(() => {
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        triggerOfflineMode(true);
+      }
+    }, 2000);
+
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('online', handleOnline);
+        window.removeEventListener('offline', handleOffline);
+        window.clearInterval(intervalId);
+      }
+    };
+  }, [triggerOfflineMode]);
+
   // Small Square Hint Button Description Modal ('letter' | 'word' | null)
   const [activeHintModal, setActiveHintModal] = useState<'letter' | 'word' | null>(null);
 
@@ -203,40 +268,59 @@ export default function App() {
 
   // Progression, Currency & Official Stages (Default + User-Generated Stages)
   const [currency, setCurrency] = useState<number>(
-    initialSave?.currency ?? INITIAL_CURRENCY
+    typeof initialSave?.currency === 'number' && !Number.isNaN(initialSave.currency)
+      ? initialSave.currency
+      : INITIAL_CURRENCY
   );
   const [highestReachedStage, setHighestReachedStage] = useState<number>(
-    initialSave?.highestReachedStage ?? 0
+    typeof initialSave?.highestReachedStage === 'number' &&
+      !Number.isNaN(initialSave.highestReachedStage)
+      ? initialSave.highestReachedStage
+      : 0
   );
   const [clearedStageIds, setClearedStageIds] = useState<string[]>(
-    initialSave?.clearedStageIds ?? []
+    Array.isArray(initialSave?.clearedStageIds) ? initialSave.clearedStageIds : []
   );
   const [hintClearedStageIds, setHintClearedStageIds] = useState<string[]>(
-    initialSave?.hintClearedStageIds ?? []
+    Array.isArray(initialSave?.hintClearedStageIds) ? initialSave.hintClearedStageIds : []
   );
   const [startedStageIds, setStartedStageIds] = useState<string[]>(
-    initialSave?.startedStageIds ?? []
+    Array.isArray(initialSave?.startedStageIds) ? initialSave.startedStageIds : []
+  );
+  const [baseStages] = useState<CrosswordPuzzle[]>(() =>
+    Array.isArray(initialSave?.baseStages) && initialSave.baseStages.length > 0
+      ? initialSave.baseStages
+      : STAGE_PUZZLES
   );
   const [unlockedStageIds, setUnlockedStageIds] = useState<string[]>(
-    initialSave?.unlockedStageIds ?? [STAGE_PUZZLES[0].id]
+    Array.isArray(initialSave?.unlockedStageIds) && initialSave.unlockedStageIds.length > 0
+      ? initialSave.unlockedStageIds
+      : [
+          (Array.isArray(initialSave?.baseStages) && initialSave.baseStages.length > 0
+            ? initialSave.baseStages[0]
+            : STAGE_PUZZLES[0]
+          ).id,
+        ]
   );
   const [customStages, setCustomStages] = useState<CrosswordPuzzle[]>(
-    initialSave?.customStages ?? []
+    Array.isArray(initialSave?.customStages) ? initialSave.customStages : []
   );
 
   // Combined Official Stage List (Base stages + User-generated official stages)
   const allStages = useMemo(() => {
     const map = new Map<string, CrosswordPuzzle>();
-    for (const s of STAGE_PUZZLES) {
+    for (const s of baseStages) {
       map.set(s.id, { ...s, wordReward: 5 });
     }
     for (const cs of customStages) {
-      map.set(cs.id, { ...cs, wordReward: 5 });
+      if (cs && typeof cs.id === 'string' && Array.isArray(cs.words)) {
+        map.set(cs.id, { ...cs, wordReward: 5 });
+      }
     }
     return Array.from(map.values()).sort(
       (a, b) => (a.stageNumber ?? 0) - (b.stageNumber ?? 0)
     );
-  }, [customStages]);
+  }, [baseStages, customStages]);
 
   // Next automatic stage number for user creation (auto-assigned, no manual input needed)
   const nextAutoStageNumber = useMemo(() => {
@@ -247,15 +331,12 @@ export default function App() {
   const [isCreateStageOpen, setIsCreateStageOpen] = useState<boolean>(false);
   const [createGridSize, setCreateGridSize] = useState<number>(15);
   const [createTargetWords, setCreateTargetWords] = useState<number>(20);
-  const [dictionaryWordCount, setDictionaryWordCount] = useState<number>(() =>
-    getSharedCrosswordGenerator().getTotalWordCount()
-  );
 
   // Active Puzzle State - Restore from saved if available
   const initialPuzzleInfo = useMemo(() => {
     const ap = initialSave?.activePuzzle;
     const initialAllStages = [
-      ...STAGE_PUZZLES,
+      ...baseStages,
       ...(Array.isArray(initialSave?.customStages) ? initialSave.customStages : []),
     ];
     if (ap) {
@@ -275,7 +356,7 @@ export default function App() {
         };
       }
     }
-    const defaultPuzzle = { ...STAGE_PUZZLES[0], wordReward: 5 };
+    const defaultPuzzle = { ...baseStages[0], wordReward: 5 };
     const firstWord = defaultPuzzle.words[0] ?? {
       row: 0,
       col: 0,
@@ -293,7 +374,7 @@ export default function App() {
       wordHintCount: 0,
       hasSavedProgress: false,
     };
-  }, [initialSave]);
+  }, [initialSave, baseStages]);
 
   const [currentPuzzle, setCurrentPuzzle] = useState<CrosswordPuzzle>(initialPuzzleInfo.puzzle);
   const [grid, setGrid] = useState<GridCell[][]>(initialPuzzleInfo.grid);
@@ -419,6 +500,9 @@ export default function App() {
   useEffect(() => {
     document.body.dataset.state =
       screen === 'stage_select' ? 'playing' : screen;
+    if (screen !== 'playing') {
+      soundManager.stopBgm();
+    }
   }, [screen]);
 
   useEffect(() => {
@@ -434,6 +518,7 @@ export default function App() {
       clearedStageIds,
       hintClearedStageIds,
       unlockedStageIds,
+      baseStages,
       customStages,
       settings: {
         ...prev.settings,
@@ -450,6 +535,7 @@ export default function App() {
     clearedStageIds,
     hintClearedStageIds,
     unlockedStageIds,
+    baseStages,
     customStages,
     inputMode,
     bgmEnabled,
@@ -516,6 +602,9 @@ export default function App() {
   // Flush on page unload or visibility hidden
   useEffect(() => {
     const handleUnloadOrHide = () => {
+      if (typeof document !== 'undefined' && document.hidden) {
+        soundManager.pauseForBackground();
+      }
       if (screen === 'playing') {
         saveStateToStorage((prev) => ({
           ...prev,
@@ -548,6 +637,55 @@ export default function App() {
     activeDirection,
     runWordRewardEarned,
   ]);
+
+  const screenRef = useRef<ScreenState>(screen);
+  useEffect(() => {
+    screenRef.current = screen;
+  }, [screen]);
+
+  const navigateToTitle = useCallback(() => {
+    setIsDeleteMode(false);
+    setSelectedDeleteIds([]);
+    setIsCreateStageOpen(false);
+    setIsConfirmBulkDeleteOpen(false);
+    setActiveHintModal(null);
+    setIsSettingsOpen(false);
+    setIsHowToPlayOpen(false);
+    screenRef.current = 'title';
+    setScreen('title');
+    if (typeof window !== 'undefined' && window.history) {
+      try {
+        window.history.replaceState({ screen: 'title' }, '');
+      } catch {
+        // Ignore history errors in restricted WebViews
+      }
+    }
+  }, []);
+
+  const navigateToStageSelect = useCallback(() => {
+    const prevScreen = screenRef.current;
+    setIsDeleteMode(false);
+    setSelectedDeleteIds([]);
+    setIsCreateStageOpen(false);
+    setIsConfirmBulkDeleteOpen(false);
+    setActiveHintModal(null);
+    setIsSettingsOpen(false);
+    setIsHowToPlayOpen(false);
+    screenRef.current = 'stage_select';
+    setScreen('stage_select');
+    if (typeof window !== 'undefined' && window.history) {
+      try {
+        if (prevScreen === 'title') {
+          window.history.replaceState({ screen: 'title' }, '');
+          window.history.pushState({ screen: 'stage_select' }, '');
+        } else {
+          window.history.replaceState({ screen: 'stage_select' }, '');
+        }
+      } catch {
+        // Ignore history errors in restricted WebViews
+      }
+    }
+  }, []);
 
   const startPuzzle = useCallback((puzzle: CrosswordPuzzle, forceFresh = false) => {
     const saved = loadInitialSave();
@@ -598,11 +736,28 @@ export default function App() {
       setRunWordHintCount(0);
     }
 
+    const prevScreen = screenRef.current;
     setZoomScale(1.0);
     setPanOffset({ x: 0, y: 0 });
     setIsSettingsOpen(false);
     setActiveHintModal(null);
+    screenRef.current = 'playing';
     setScreen('playing');
+    if (typeof window !== 'undefined' && window.history) {
+      try {
+        if (prevScreen === 'title') {
+          window.history.replaceState({ screen: 'title' }, '');
+          window.history.pushState({ screen: 'stage_select' }, '');
+          window.history.pushState({ screen: 'playing' }, '');
+        } else if (prevScreen === 'stage_select') {
+          window.history.pushState({ screen: 'playing' }, '');
+        } else {
+          window.history.replaceState({ screen: 'playing' }, '');
+        }
+      } catch {
+        // Ignore history errors in restricted WebViews
+      }
+    }
     soundManager.startBgm();
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
@@ -619,8 +774,74 @@ export default function App() {
         return;
       }
     }
-    setScreen('stage_select');
-  }, [allStages, startPuzzle]);
+    navigateToStageSelect();
+  }, [allStages, startPuzzle, navigateToStageSelect]);
+
+  // Initialize history stack and handle browser / Android hardware Back navigation:
+  // playing (or gameover) -> stage_select -> title
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.history) return;
+    try {
+      if (initialAutoStart) {
+        window.history.replaceState({ screen: 'title' }, '');
+        window.history.pushState({ screen: 'stage_select' }, '');
+        window.history.pushState({ screen: 'playing' }, '');
+      } else {
+        window.history.replaceState({ screen: 'title' }, '');
+      }
+    } catch {
+      // Ignore history errors
+    }
+
+    const handleBackAction = (): boolean => {
+      if (screenRef.current === 'playing' || screenRef.current === 'gameover') {
+        soundManager.playSnapFit();
+        setActiveHintModal(null);
+        setIsSettingsOpen(false);
+        setIsDeleteMode(false);
+        setSelectedDeleteIds([]);
+        screenRef.current = 'stage_select';
+        setScreen('stage_select');
+        try {
+          if (window.history.state?.screen !== 'stage_select') {
+            window.history.replaceState({ screen: 'title' }, '');
+            window.history.pushState({ screen: 'stage_select' }, '');
+          }
+        } catch {
+          // Ignore
+        }
+        return true;
+      }
+      if (screenRef.current === 'stage_select') {
+        soundManager.playSnapFit();
+        setIsDeleteMode(false);
+        setSelectedDeleteIds([]);
+        setIsCreateStageOpen(false);
+        setIsConfirmBulkDeleteOpen(false);
+        setIsSettingsOpen(false);
+        screenRef.current = 'title';
+        setScreen('title');
+        try {
+          window.history.replaceState({ screen: 'title' }, '');
+        } catch {
+          // Ignore
+        }
+        return true;
+      }
+      return false;
+    };
+
+    const handlePopState = () => {
+      handleBackAction();
+    };
+
+    (window as unknown as { handleAndroidBack?: () => boolean }).handleAndroidBack =
+      handleBackAction;
+    window.addEventListener('popstate', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, [initialAutoStart]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -629,12 +850,40 @@ export default function App() {
       if (screen === 'title' && (e.key === 'Enter' || e.key === ' ')) {
         e.preventDefault();
         soundManager.playSnapFit();
-        setScreen('stage_select');
+        navigateToStageSelect();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        if (isSettingsOpen) {
+          setIsSettingsOpen(false);
+        } else if (isHowToPlayOpen) {
+          setIsHowToPlayOpen(false);
+        } else if (activeHintModal !== null) {
+          setActiveHintModal(null);
+        } else if (isCreateStageOpen) {
+          setIsCreateStageOpen(false);
+        } else if (isConfirmBulkDeleteOpen) {
+          setIsConfirmBulkDeleteOpen(false);
+        } else if (screen === 'playing' || screen === 'gameover') {
+          soundManager.playSnapFit();
+          navigateToStageSelect();
+        } else if (screen === 'stage_select') {
+          soundManager.playSnapFit();
+          navigateToTitle();
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [screen]);
+  }, [
+    screen,
+    isSettingsOpen,
+    isHowToPlayOpen,
+    activeHintModal,
+    isCreateStageOpen,
+    isConfirmBulkDeleteOpen,
+    navigateToStageSelect,
+    navigateToTitle,
+  ]);
 
   const activeWord = useMemo((): WordClue | null => {
     const cell = grid[selectedCell.row]?.[selectedCell.col];
@@ -1053,7 +1302,78 @@ export default function App() {
     soundManager.playSnapFit();
   };
 
-  const clampPan = (val: number) => Math.min(280, Math.max(-280, val));
+  const boardGapPx = 2;
+  const boardCellPx = useMemo(
+    () =>
+      Math.max(
+        42,
+        Math.floor(
+          (boardBoxSize - boardGapPx * (currentPuzzle.size - 1)) /
+            currentPuzzle.size
+        )
+      ),
+    [boardBoxSize, currentPuzzle.size]
+  );
+
+  const maxPanBound = useMemo(
+    () =>
+      Math.max(
+        320,
+        Math.ceil(((currentPuzzle.size * (boardCellPx + boardGapPx)) / 2) * zoomScale)
+      ),
+    [currentPuzzle.size, boardCellPx, zoomScale]
+  );
+
+  const clampPan = useCallback(
+    (val: number) => Math.min(maxPanBound, Math.max(-maxPanBound, val)),
+    [maxPanBound]
+  );
+
+  const zoomScaleRef = useRef(zoomScale);
+  useEffect(() => {
+    zoomScaleRef.current = zoomScale;
+  }, [zoomScale]);
+
+  // Automatically pan the crossword board so the cells of the problem displayed in the hint area are centered in view
+  useEffect(() => {
+    if (screen !== 'playing') return;
+    const scale = zoomScaleRef.current;
+    const gridMidIndex = (currentPuzzle.size - 1) / 2;
+    const stepPx = boardCellPx + boardGapPx;
+    const bound = Math.max(
+      320,
+      Math.ceil(((currentPuzzle.size * stepPx) / 2) * scale)
+    );
+
+    let targetRow = selectedCell.row;
+    let targetCol = selectedCell.col;
+
+    if (activeWord) {
+      const len = Math.max(1, activeWord.answer.length);
+      const wordMidRow =
+        activeWord.row + (activeWord.direction === 'down' ? (len - 1) / 2 : 0);
+      const wordMidCol =
+        activeWord.col + (activeWord.direction === 'across' ? (len - 1) / 2 : 0);
+      targetRow = wordMidRow * 0.65 + selectedCell.row * 0.35;
+      targetCol = wordMidCol * 0.65 + selectedCell.col * 0.35;
+    }
+
+    const nextX = Math.round(-(targetCol - gridMidIndex) * stepPx * scale);
+    const nextY = Math.round(-(targetRow - gridMidIndex) * stepPx * scale);
+
+    setPanOffset({
+      x: Math.min(bound, Math.max(-bound, nextX)),
+      y: Math.min(bound, Math.max(-bound, nextY)),
+    });
+  }, [
+    screen,
+    currentPuzzle.id,
+    currentPuzzle.size,
+    activeWord?.id,
+    selectedCell.row,
+    selectedCell.col,
+    boardCellPx,
+  ]);
 
   // Two-finger Pinch-to-Zoom & 1-Finger / Mouse Free Pan handlers (allows dragging beyond puzzle bounds)
   const handleBoardTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
@@ -1185,24 +1505,6 @@ export default function App() {
     return used;
   }, [allStages]);
 
-  // Live preview of List<CrosswordWordData> for the auto-assigned stageNumber with user-chosen grid size and word count
-  const previewWordDataList = useMemo(() => {
-    if (!isCreateStageOpen) return [];
-    return generateCrosswordWordDataList(
-      nextAutoStageNumber,
-      createGridSize,
-      createTargetWords,
-      previouslyUsedWords
-    );
-  }, [
-    isCreateStageOpen,
-    nextAutoStageNumber,
-    createGridSize,
-    createTargetWords,
-    previouslyUsedWords,
-    dictionaryWordCount,
-  ]);
-
   const totalStagePages = useMemo(
     () => Math.max(1, Math.ceil((allStages.length + 1) / STAGES_PER_PAGE)),
     [allStages.length]
@@ -1295,7 +1597,7 @@ export default function App() {
     setUnlockedStageIds((prev) => prev.filter((id) => !toDeleteSet.has(id)));
 
     if (toDeleteSet.has(currentPuzzle.id)) {
-      const fallback = { ...STAGE_PUZZLES[0], wordReward: 5 };
+      const fallback = { ...baseStages[0], wordReward: 5 };
       setCurrentPuzzle(fallback);
       setGrid(buildCrosswordGrid(fallback));
       setSolvedWordIds(new Set());
@@ -1320,9 +1622,9 @@ export default function App() {
           1. 메인 화면 (오른쪽 위 설정 버튼, 중앙 로고/제목, 시작하기 + 게임방법 버튼)
       ===================================================================== */}
       {screen === 'title' && (
-        <main className="relative h-full w-full flex flex-col items-center justify-center px-6 overflow-hidden">
-          {/* 오른쪽 위 설정 버튼 */}
-          <div className="absolute top-4 right-4 z-10">
+        <main className="relative h-full w-full flex flex-col items-center justify-between px-6 pt-1 pb-4 overflow-hidden">
+          {/* 상단 노치 영역 아래로 내려온 오른쪽 위 설정 버튼 */}
+          <div className="w-full max-w-md md:max-w-2xl flex items-center justify-end shrink-0">
             <button
               type="button"
               onClick={() => {
@@ -1341,7 +1643,7 @@ export default function App() {
             </button>
           </div>
 
-          <div className="flex flex-col items-center gap-10 w-full max-w-xs text-center">
+          <div className="flex flex-col items-center gap-10 w-full max-w-xs text-center my-auto">
             <div className="flex flex-col items-center gap-4">
               <svg
                 viewBox="0 0 64 64"
@@ -1355,33 +1657,44 @@ export default function App() {
                   width="64"
                   height="64"
                   rx="16"
-                  fill={isDarkMode ? '#B45309' : '#B85D3B'}
+                  fill={isDarkMode ? '#CE8E54' : '#CC8B52'}
+                />
+                <rect
+                  x="3"
+                  y="3"
+                  width="58"
+                  height="58"
+                  rx="13"
+                  fill="none"
+                  stroke="#FFFDF9"
+                  strokeWidth="1.4"
+                  strokeOpacity="0.55"
                 />
                 <line
                   x1="32"
                   y1="8"
                   x2="32"
                   y2="56"
-                  stroke="#FDFBF7"
+                  stroke="#FFFDF9"
                   strokeWidth="2"
                   strokeDasharray="4 4"
-                  strokeOpacity="0.6"
+                  strokeOpacity="0.7"
                 />
                 <line
                   x1="8"
                   y1="32"
                   x2="56"
                   y2="32"
-                  stroke="#FDFBF7"
+                  stroke="#FFFDF9"
                   strokeWidth="2"
                   strokeDasharray="4 4"
-                  strokeOpacity="0.6"
+                  strokeOpacity="0.7"
                 />
                 <text
                   x="20"
                   y="25"
                   textAnchor="middle"
-                  fill="#FDFBF7"
+                  fill="#FFFDF9"
                   fontSize="16"
                   fontWeight="800"
                   fontFamily="IBM Plex Sans KR, sans-serif"
@@ -1392,7 +1705,7 @@ export default function App() {
                   x="44"
                   y="48"
                   textAnchor="middle"
-                  fill="#FDFBF7"
+                  fill="#FFFDF9"
                   fontSize="16"
                   fontWeight="800"
                   fontFamily="IBM Plex Sans KR, sans-serif"
@@ -1415,10 +1728,10 @@ export default function App() {
                     soundManager.playSnapFit();
                     resumeActivePuzzle();
                   }}
-                  className={`w-full min-h-[58px] rounded-2xl font-bold text-xl flex items-center justify-center gap-2.5 shadow-lg transition-transform active:scale-95 whitespace-nowrap ${
+                  className={`w-full min-h-[58px] rounded-2xl border font-bold text-xl flex items-center justify-center gap-2.5 shadow-md transition-transform active:scale-95 whitespace-nowrap ${
                     isDarkMode
-                      ? 'bg-amber-600 text-stone-950 hover:bg-amber-500'
-                      : 'bg-[#B85D3B] text-white hover:bg-[#9E4B2C]'
+                      ? 'bg-[#CE8E54] border-[#E2A872] text-[#FFFDF9] hover:bg-[#BF8047]'
+                      : 'bg-[#CC8B52] border-[#B6763E] text-[#FFFDF9] hover:bg-[#BC7C44]'
                   }`}
                 >
                   <Play className="w-6 h-6 fill-current" />
@@ -1431,9 +1744,7 @@ export default function App() {
                 data-start="true"
                 onClick={() => {
                   soundManager.playSnapFit();
-                  setIsDeleteMode(false);
-                  setSelectedDeleteIds([]);
-                  setScreen('stage_select');
+                  navigateToStageSelect();
                 }}
                 className={`w-full min-h-[52px] rounded-2xl font-bold text-lg flex items-center justify-center gap-2 transition-transform active:scale-95 whitespace-nowrap ${
                   hasSavedActiveGame
@@ -1441,8 +1752,8 @@ export default function App() {
                       ? 'bg-stone-800 border border-stone-700 text-stone-200 hover:bg-stone-700'
                       : 'bg-[#EFE9DA] border border-[#D5CBB8] text-[#2C2520] hover:bg-[#E4DCC8]'
                     : isDarkMode
-                    ? 'bg-amber-600 text-stone-950 hover:bg-amber-500 shadow-lg'
-                    : 'bg-[#B85D3B] text-white hover:bg-[#9E4B2C] shadow-lg'
+                    ? 'bg-[#CE8E54] border border-[#E2A872] text-[#FFFDF9] hover:bg-[#BF8047] shadow-md'
+                    : 'bg-[#CC8B52] border border-[#B6763E] text-[#FFFDF9] hover:bg-[#BC7C44] shadow-md'
                 }`}
               >
                 <span>{hasSavedActiveGame ? '스테이지 목록' : '시작하기'}</span>
@@ -1467,6 +1778,8 @@ export default function App() {
               </button>
             </div>
           </div>
+
+          <div className="h-4 shrink-0" aria-hidden="true" />
         </main>
       )}
 
@@ -1477,77 +1790,73 @@ export default function App() {
           - 하단: 페이지 이동 컨트롤
       ===================================================================== */}
       {screen === 'stage_select' && (
-        <main className="h-full w-full max-w-md md:max-w-2xl mx-auto px-4 py-3 flex flex-col justify-between overflow-hidden">
-          <div className="flex flex-col gap-2 shrink-0">
-            <div className="flex items-center justify-between gap-2">
+        <main className="h-full w-full max-w-md md:max-w-2xl mx-auto px-4 pt-1 pb-2 flex flex-col justify-between overflow-hidden">
+          <div className="flex flex-col gap-2 shrink-0 w-full">
+            <div className="w-full flex items-center justify-center gap-1.5 sm:gap-2.5">
               <button
                 type="button"
                 onClick={() => {
                   soundManager.playSnapFit();
-                  setIsDeleteMode(false);
-                  setSelectedDeleteIds([]);
-                  setScreen('title');
+                  navigateToTitle();
                 }}
                 aria-label="메인화면으로 이동"
-                className={`min-h-[44px] px-3.5 rounded-2xl border font-bold text-sm flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
+                className={`min-h-[44px] px-3 sm:px-3.5 rounded-2xl border font-bold text-xs sm:text-sm flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
                   isDarkMode
                     ? 'bg-stone-800 border-stone-700 text-stone-100 hover:bg-stone-700'
                     : 'bg-[#EFE9DA] border-[#D5CBB8] text-[#2C2520] hover:bg-[#E4DCC8]'
                 }`}
               >
-                <Home className="w-4 h-4" />
+                <Home className="w-4 h-4 shrink-0" />
                 <span>메인화면</span>
               </button>
 
-              <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-                {/* 내가 만든 스테이지 선택 삭제 모드 토글 버튼 */}
-                <button
-                  type="button"
-                  data-testid="stage-delete-mode-btn"
-                  onClick={() => {
-                    soundManager.playSnapFit();
-                    setIsDeleteMode((prev) => !prev);
-                    setSelectedDeleteIds([]);
-                  }}
-                  aria-label="스테이지 삭제 모드 전환"
-                  className={`min-h-[44px] px-3 rounded-2xl border font-bold text-xs sm:text-sm flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
-                    isDeleteMode
-                      ? 'bg-rose-600 border-rose-500 text-white hover:bg-rose-500'
-                      : isDarkMode
-                      ? 'bg-stone-800 border-stone-700 text-rose-300 hover:bg-stone-700'
-                      : 'bg-[#EFE9DA] border-[#D5CBB8] text-[#9E3B26] hover:bg-[#E4DCC8]'
-                  }`}
-                >
-                  <Trash2 className="w-4 h-4" />
-                  <span>스테이지 삭제</span>
-                </button>
+              {/* 내가 만든 스테이지 선택 삭제 모드 토글 버튼 */}
+              <button
+                type="button"
+                data-testid="stage-delete-mode-btn"
+                onClick={() => {
+                  soundManager.playSnapFit();
+                  setIsDeleteMode((prev) => !prev);
+                  setSelectedDeleteIds([]);
+                }}
+                aria-label="스테이지 삭제 모드 전환"
+                className={`min-h-[44px] px-3 sm:px-3.5 rounded-2xl border font-bold text-xs sm:text-sm flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
+                  isDeleteMode
+                    ? 'bg-rose-600 border-rose-500 text-white hover:bg-rose-500'
+                    : isDarkMode
+                    ? 'bg-stone-800 border-stone-700 text-rose-300 hover:bg-stone-700'
+                    : 'bg-[#EFE9DA] border-[#D5CBB8] text-[#9E3B26] hover:bg-[#E4DCC8]'
+                }`}
+              >
+                <Trash2 className="w-4 h-4 shrink-0" />
+                <span>스테이지 삭제</span>
+              </button>
 
-                <div
-                  aria-label={`보유 재화 ${currency} 엽전`}
-                  className={`min-h-[44px] px-3 sm:px-3.5 rounded-2xl border flex items-center gap-1.5 font-mono font-bold text-sm tabular-nums whitespace-nowrap ${
-                    isDarkMode
-                      ? 'bg-stone-900 border-stone-700 text-amber-300'
-                      : 'bg-[#EFE9DA] border-[#D5CBB8] text-[#7A3E18]'
-                  }`}
-                >
-                  <Coins className="w-4 h-4 text-amber-600 dark:text-amber-400" />
-                  <span>{currency}</span>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => setIsSettingsOpen(true)}
-                  aria-label="설정 열기"
-                  className={`min-h-[44px] min-w-[44px] px-3 rounded-2xl border font-bold text-sm flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
-                    isDarkMode
-                      ? 'bg-stone-800 border-stone-700 text-stone-100 hover:bg-stone-700'
-                      : 'bg-[#EFE9DA] border-[#D5CBB8] text-[#2C2520] hover:bg-[#E4DCC8]'
-                  }`}
-                >
-                  <Settings className="w-4 h-4" />
-                  <span className="hidden sm:inline">설정</span>
-                </button>
+              <div
+                aria-label={`보유 재화 ${currency} 엽전`}
+                className={`min-h-[44px] px-3 sm:px-3.5 rounded-2xl border flex items-center justify-center gap-1.5 font-mono font-bold text-xs sm:text-sm tabular-nums whitespace-nowrap shrink-0 ${
+                  isDarkMode
+                    ? 'bg-stone-900 border-stone-700 text-amber-300'
+                    : 'bg-[#EFE9DA] border-[#D5CBB8] text-[#7A3E18]'
+                }`}
+              >
+                <Coins className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                <span>{currency}</span>
               </div>
+
+              <button
+                type="button"
+                onClick={() => setIsSettingsOpen(true)}
+                aria-label="설정 열기"
+                className={`min-h-[44px] px-3 sm:px-3.5 rounded-2xl border font-bold text-xs sm:text-sm flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
+                  isDarkMode
+                    ? 'bg-stone-800 border-stone-700 text-stone-100 hover:bg-stone-700'
+                    : 'bg-[#EFE9DA] border-[#D5CBB8] text-[#2C2520] hover:bg-[#E4DCC8]'
+                }`}
+              >
+                <Settings className="w-4 h-4 shrink-0" />
+                <span>설정</span>
+              </button>
             </div>
 
             {/* 선택 삭제 모드일 때 상단에 나타나는 선택 삭제 액션 바 */}
@@ -1625,7 +1934,7 @@ export default function App() {
 
           {/* 중앙 정렬된 스테이지 그리드 영역 (페이지당 최대 20개) */}
           <div
-            className="flex-1 min-h-0 flex flex-col justify-center overflow-y-auto py-2 pr-1"
+            className="flex-1 min-h-0 flex flex-col justify-center overflow-y-auto py-2 px-1"
             role="list"
             aria-label="스테이지 목록"
           >
@@ -1759,7 +2068,7 @@ export default function App() {
                     className={`aspect-square rounded-2xl border-2 border-dashed flex flex-col items-center justify-center gap-0.5 font-bold transition-all active:scale-95 ${
                       isDarkMode
                         ? 'bg-stone-900/70 border-amber-500/70 text-amber-300 hover:bg-stone-800'
-                        : 'bg-[#EFE9DA]/80 border-[#B85D3B] text-[#9E4726] hover:bg-[#E5DEC9]'
+                        : 'bg-[#EFE9DA]/80 border-[#B6763E] text-[#9E622E] hover:bg-[#E5DEC9]'
                     }`}
                   >
                     <Plus className="w-7 h-7 stroke-[2.5]" />
@@ -1770,7 +2079,7 @@ export default function App() {
           </div>
 
           {/* 하단 페이지네이션 컨트롤 (20개 단위 페이지 이동) */}
-          <div className="flex items-center justify-center gap-3 pt-2 shrink-0">
+          <div className="flex items-center justify-center gap-3 pt-2 pb-1 shrink-0">
             <button
               type="button"
               disabled={stagePage === 0}
@@ -1819,14 +2128,14 @@ export default function App() {
 
       {/* =====================================================================
           3. 문제 플레이 화면
-          - 모바일(< md): 상단 십자말풀이 보드 + 하단 반반(50:50) 분할(좌: 힌트, 우: 필기)
-          - 태블릿 전용 화면(>= md): 3단 가로 분할 (왼쪽: 힌트 화면 / 가운데: 문제 화면 / 오른쪽: 필기 영역)
+          - 모바일(< md): 상단 십자말풀이 보드 + 하단 분할(좌: 힌트, 우: 더 커진 정사각형 필기 영역)
+          - 태블릿 전용 화면(>= md): 3단 가로 분할 (왼쪽: 힌트 화면 / 가운데: 문제 화면 / 오른쪽: 정사각형 필기 영역)
       ===================================================================== */}
       {(screen === 'playing' || screen === 'gameover') && (
-        <div className="h-full w-full max-w-xl md:max-w-7xl mx-auto px-2.5 md:px-4 py-2 md:py-3 flex flex-col justify-between gap-2 md:gap-3 overflow-hidden">
-          {/* 상단 바: 목록 / 타이머 / 재화 + 설정 */}
+        <div className="h-full w-full max-w-xl md:max-w-7xl mx-auto px-2.5 md:px-4 pt-0.5 pb-1.5 md:py-2 flex flex-col justify-between gap-2 md:gap-3 overflow-hidden">
+          {/* 상단 바: 좌측 뒤로가기(<) / 중앙(타이머·재화·입력모드) / 우측 설정(톱니바퀴) */}
           <div
-            className={`rounded-2xl border px-2.5 md:px-3.5 py-1.5 md:py-2 flex items-center justify-between gap-2 shrink-0 ${
+            className={`rounded-2xl border px-2 md:px-3.5 py-1.5 md:py-2 flex items-center justify-between gap-1 sm:gap-2 shrink-0 ${
               isDarkMode
                 ? 'bg-stone-900 border-stone-700'
                 : 'bg-[#EFE9DA] border-[#D8CEBE]'
@@ -1834,79 +2143,142 @@ export default function App() {
           >
             <button
               type="button"
-              onClick={() => setScreen('stage_select')}
+              onClick={() => {
+                soundManager.playSnapFit();
+                navigateToStageSelect();
+              }}
               aria-label="스테이지 선택 화면으로 이동"
-              className={`min-h-[38px] px-2.5 rounded-xl border flex items-center justify-center gap-1 text-xs font-bold whitespace-nowrap shrink-0 ${
+              title="스테이지 목록으로 이동"
+              className={`min-h-[38px] min-w-[38px] w-[38px] h-[38px] rounded-xl border flex items-center justify-center transition-colors shrink-0 ${
                 isDarkMode
                   ? 'bg-stone-800 border-stone-700 text-stone-200 hover:bg-stone-700'
                   : 'bg-[#FDFBF7] border-[#D5CBB8] text-[#4A3F35] hover:bg-[#F3ECE0]'
               }`}
             >
-              <ChevronLeft className="w-4 h-4" />
-              <span>목록</span>
+              <ChevronLeft className="w-5 h-5 stroke-[2.2]" />
             </button>
 
-            <div
-              aria-label={`경과 시간 ${formatTimerMMSS(elapsedSeconds)}`}
-              className={`min-h-[38px] px-3 rounded-xl border flex items-center gap-1.5 font-mono font-bold text-sm tabular-nums ${
-                isDarkMode
-                  ? 'bg-stone-950 border-stone-700 text-stone-100'
-                  : 'bg-[#FDFBF7] border-[#D5CBB8] text-[#2C2520]'
-              }`}
-            >
-              <Clock className="w-3.5 h-3.5 text-[#B85D3B] dark:text-amber-400" />
-              <span data-testid="hud-timer">{formatTimerMMSS(elapsedSeconds)}</span>
-            </div>
+            <div className="flex items-center justify-center gap-1.5 sm:gap-2 shrink-0">
+              <div
+                aria-label={`경과 시간 ${formatTimerMMSS(elapsedSeconds)}`}
+                className={`min-h-[38px] px-2.5 sm:px-3 rounded-xl border flex items-center justify-center gap-1 font-mono font-bold text-xs sm:text-sm tabular-nums ${
+                  isDarkMode
+                    ? 'bg-stone-950 border-stone-700 text-stone-100'
+                    : 'bg-[#FDFBF7] border-[#D5CBB8] text-[#2C2520]'
+                }`}
+              >
+                <Clock className="w-3.5 h-3.5 text-[#5C4332] dark:text-amber-400 shrink-0" />
+                <span data-testid="hud-timer">{formatTimerMMSS(elapsedSeconds)}</span>
+              </div>
 
-            <div className="flex items-center gap-1.5 shrink-0">
               <div
                 aria-label={`보유 재화 ${currency} 엽전`}
-                className={`min-h-[38px] px-2.5 rounded-xl border flex items-center gap-1 font-mono font-bold text-sm tabular-nums ${
+                className={`min-h-[38px] px-2.5 sm:px-3 rounded-xl border flex items-center justify-center gap-1 font-mono font-bold text-xs sm:text-sm tabular-nums ${
                   isDarkMode
                     ? 'bg-amber-950/60 border-amber-700/80 text-amber-300'
                     : 'bg-[#F8EED8] border-[#DFC99F] text-[#7A3E18]'
                 }`}
               >
-                <Coins className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                <Coins className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
                 <span data-testid="hud-currency">{currency}</span>
               </div>
 
               <button
                 type="button"
-                onClick={() => setIsSettingsOpen(true)}
-                aria-label="설정 열기"
-                className={`min-h-[38px] min-w-[38px] rounded-xl border flex items-center justify-center ${
-                  isDarkMode
+                onClick={
+                  isOffline
+                    ? handleAttemptSwitchToHandwriting
+                    : inputMode === 'handwriting'
+                    ? () => setInputMode('typing')
+                    : handleAttemptSwitchToHandwriting
+                }
+                aria-label={
+                  isOffline
+                    ? '손글씨 (오프라인 모드에서는 사용 불가)'
+                    : inputMode === 'handwriting'
+                    ? '키보드 모드로 전환'
+                    : '손글씨 모드로 전환'
+                }
+                title={
+                  isOffline
+                    ? '오프라인 환경에서는 손글씨 모드를 지원하지 않습니다'
+                    : inputMode === 'handwriting'
+                    ? '키보드로 전환'
+                    : '손글씨로 전환'
+                }
+                className={`min-h-[38px] px-2.5 sm:px-3 rounded-xl border flex items-center justify-center gap-1 text-xs font-bold whitespace-nowrap transition-all active:scale-95 shrink-0 ${
+                  isOffline
+                    ? 'bg-stone-200/90 dark:bg-stone-800/80 border-stone-300 dark:border-stone-700 text-stone-400 dark:text-stone-500 shadow-none'
+                    : inputMode === 'handwriting'
+                    ? isDarkMode
+                      ? 'bg-[#CE8E54] border-[#E2A872] text-[#FFFDF9]'
+                      : 'bg-[#CC8B52] border-[#B6763E] text-[#FFFDF9]'
+                    : isDarkMode
                     ? 'bg-stone-800 border-stone-700 text-stone-200 hover:bg-stone-700'
                     : 'bg-[#FDFBF7] border-[#D5CBB8] text-[#4A3F35] hover:bg-[#F3ECE0]'
                 }`}
               >
-                <Settings className="w-4 h-4" />
+                {isOffline ? (
+                  <>
+                    <PenTool className="w-3.5 h-3.5 opacity-40 shrink-0" />
+                    <span className="hidden sm:inline opacity-70">손글씨</span>
+                    <span className="text-[10px] px-1 py-0.5 rounded bg-stone-300/80 dark:bg-stone-700/80 text-stone-500 dark:text-stone-400 font-normal">
+                      오프라인
+                    </span>
+                  </>
+                ) : inputMode === 'handwriting' ? (
+                  <>
+                    <PenTool className="w-3.5 h-3.5 shrink-0" />
+                    <span className="hidden sm:inline">손글씨</span>
+                  </>
+                ) : (
+                  <>
+                    <Keyboard className="w-3.5 h-3.5 shrink-0" />
+                    <span className="hidden sm:inline">자판</span>
+                  </>
+                )}
               </button>
             </div>
+
+            <button
+              type="button"
+              onClick={() => setIsSettingsOpen(true)}
+              aria-label="설정 열기"
+              className={`min-h-[38px] min-w-[38px] w-[38px] h-[38px] rounded-xl border flex items-center justify-center shrink-0 ${
+                isDarkMode
+                  ? 'bg-stone-800 border-stone-700 text-stone-200 hover:bg-stone-700'
+                  : 'bg-[#FDFBF7] border-[#D5CBB8] text-[#4A3F35] hover:bg-[#F3ECE0]'
+              }`}
+            >
+              <Settings className="w-4 h-4" />
+            </button>
           </div>
 
           {/* 반응형 메인 작업 영역:
-              - 모바일(< md): 2열 2행 (1행 전체: 문제 화면, 2행 좌: 힌트 화면, 2행 우: 필기 영역)
-              - 태블릿(>= md): 3열 1행 (좌: 힌트 화면, 중앙: 문제 화면, 우: 필기 영역) */}
+              - 손글씨 모드: 힌트 영역과 정사각형 손글씨 영역이 서로 겹치거나 찌부러지지 않도록 균형 분할
+              - 키보드 입력 모드: 글자 작성 영역을 작고 컴팩트하게 축소 */}
           <div
             data-testid="play-workspace"
-            className="flex-1 min-h-0 grid grid-cols-2 grid-rows-[minmax(0,1fr)_200px] sm:grid-rows-[minmax(0,1fr)_235px] md:grid-cols-[250px_minmax(0,1fr)_270px] lg:grid-cols-[290px_minmax(0,1fr)_310px] md:grid-rows-1 gap-2 md:gap-3 overflow-hidden"
+            className={`flex-1 min-h-0 grid gap-2 md:gap-3 overflow-hidden ${
+              inputMode === 'handwriting'
+                ? 'grid-cols-[minmax(0,46%)_minmax(0,54%)] sm:grid-cols-[minmax(0,1fr)_224px] grid-rows-[minmax(0,1fr)_248px] sm:grid-rows-[minmax(0,1fr)_276px] md:grid-cols-[240px_minmax(0,1fr)_310px] lg:grid-cols-[280px_minmax(0,1fr)_350px] md:grid-rows-1'
+                : 'grid-cols-[minmax(0,1fr)_144px] sm:grid-cols-[minmax(0,1fr)_164px] grid-rows-[minmax(0,1fr)_140px] sm:grid-rows-[minmax(0,1fr)_152px] md:grid-cols-[240px_minmax(0,1fr)_200px] lg:grid-cols-[280px_minmax(0,1fr)_220px] md:grid-rows-1'
+            }`}
           >
             {/* [왼쪽 / 모바일 하단 좌측] 힌트 화면 */}
             <div
               data-testid="hint-panel"
-              className={`col-span-1 col-start-1 row-start-2 md:col-start-1 md:row-start-1 h-full min-h-0 rounded-2xl border p-2.5 md:p-3.5 flex flex-col justify-between gap-2 overflow-hidden ${
+              className={`col-span-1 col-start-1 row-start-2 md:col-start-1 md:row-start-1 h-full min-h-0 min-w-0 rounded-2xl border p-2 md:p-3.5 flex flex-col justify-between gap-1.5 md:gap-2 overflow-hidden ${
                 isDarkMode
                   ? 'bg-stone-900 border-stone-700'
                   : 'bg-[#EFE9DA] border-[#D8CEBE]'
               }`}
             >
               {/* 상단: 번호/방향 & 이전/다음 화살표 */}
-              <div className="flex items-center justify-between gap-1 shrink-0">
+              <div className="flex items-center justify-between gap-1 shrink-0 min-w-0">
                 <span
-                  className={`text-xs md:text-sm font-bold truncate ${
-                    isDarkMode ? 'text-amber-400' : 'text-[#9E4726]'
+                  className={`text-xs md:text-sm font-bold truncate min-w-0 ${
+                    isDarkMode ? 'text-amber-400' : 'text-[#5C4332]'
                   }`}
                 >
                   {activeWord
@@ -1921,7 +2293,7 @@ export default function App() {
                     type="button"
                     onClick={() => handleCycleWord(-1)}
                     aria-label="이전 문제"
-                    className={`w-7 h-7 md:w-8 md:h-8 rounded-lg border flex items-center justify-center ${
+                    className={`w-7 h-7 md:w-8 md:h-8 rounded-lg border flex items-center justify-center shrink-0 ${
                       isDarkMode
                         ? 'bg-stone-800 border-stone-600 text-stone-200 hover:bg-stone-700'
                         : 'bg-[#FDFBF7] border-[#C9BCA6] text-[#4A3F35] hover:bg-[#F3ECE0]'
@@ -1933,7 +2305,7 @@ export default function App() {
                     type="button"
                     onClick={() => handleCycleWord(1)}
                     aria-label="다음 문제"
-                    className={`w-7 h-7 md:w-8 md:h-8 rounded-lg border flex items-center justify-center ${
+                    className={`w-7 h-7 md:w-8 md:h-8 rounded-lg border flex items-center justify-center shrink-0 ${
                       isDarkMode
                         ? 'bg-stone-800 border-stone-600 text-stone-200 hover:bg-stone-700'
                         : 'bg-[#FDFBF7] border-[#C9BCA6] text-[#4A3F35] hover:bg-[#F3ECE0]'
@@ -1946,13 +2318,13 @@ export default function App() {
 
               {/* 현재 선택된 문제 설명 문장 */}
               <div
-                className={`flex-1 md:flex-none flex items-center py-1 md:p-3 md:rounded-xl md:border overflow-hidden ${
+                className={`flex-1 md:flex-none min-h-0 min-w-0 flex items-center py-0.5 md:p-3 md:rounded-xl md:border overflow-y-auto ${
                   isDarkMode
                     ? 'md:bg-stone-950/70 md:border-stone-800'
                     : 'md:bg-[#FDFBF7] md:border-[#DFD5C3]'
                 }`}
               >
-                <p className="text-sm sm:text-base font-bold leading-snug break-keep">
+                <p className="text-xs sm:text-sm md:text-base font-bold leading-snug break-words">
                   {activeWord?.clue}
                 </p>
               </div>
@@ -1976,7 +2348,7 @@ export default function App() {
                           isCurrent
                             ? isDarkMode
                               ? 'bg-amber-950/70 border-amber-500 text-amber-100'
-                              : 'bg-[#FFF5D6] border-[#B85D3B] text-[#2C2520]'
+                              : 'bg-[#F6EBD6] border-[#5C4332] text-[#2C2520]'
                             : isSolved
                             ? isDarkMode
                               ? 'bg-emerald-950/35 border-emerald-800/60 text-emerald-300/80'
@@ -1992,7 +2364,7 @@ export default function App() {
                               isCurrent
                                 ? isDarkMode
                                   ? 'text-amber-300'
-                                  : 'text-[#9E4726]'
+                                  : 'text-[#5C4332]'
                                 : isSolved
                                 ? isDarkMode
                                   ? 'text-emerald-400'
@@ -2018,7 +2390,7 @@ export default function App() {
               </div>
 
               {/* 하단: 힌트 아이콘 버튼 2개 (누르면 무슨 힌트인지 설명 모달 표시) */}
-              <div className="flex items-center gap-1.5 md:gap-2 shrink-0">
+              <div className="flex items-center gap-1.5 md:gap-2 shrink-0 min-w-0">
                 <button
                   type="button"
                   onClick={() => {
@@ -2026,7 +2398,7 @@ export default function App() {
                     setActiveHintModal('letter');
                   }}
                   aria-label="한 글자 힌트 설명 보기"
-                  className={`w-9 h-9 md:flex-1 md:h-10 md:px-2.5 rounded-lg md:rounded-xl border flex items-center justify-center gap-1.5 text-xs font-bold transition-transform active:scale-95 shrink-0 ${
+                  className={`w-8 h-8 sm:w-9 sm:h-9 md:flex-1 md:h-10 md:px-2.5 rounded-lg md:rounded-xl border flex items-center justify-center gap-1.5 text-xs font-bold transition-transform active:scale-95 shrink-0 ${
                     isDarkMode
                       ? 'bg-stone-800 border-amber-700/70 text-amber-300 hover:bg-stone-700'
                       : 'bg-[#FDFBF7] border-[#D4B88C] text-[#8C4A27] hover:bg-[#F7EFE0]'
@@ -2043,7 +2415,7 @@ export default function App() {
                     setActiveHintModal('word');
                   }}
                   aria-label="한 단어 힌트 설명 보기"
-                  className={`w-9 h-9 md:flex-1 md:h-10 md:px-2.5 rounded-lg md:rounded-xl border flex items-center justify-center gap-1.5 text-xs font-bold transition-transform active:scale-95 shrink-0 ${
+                  className={`w-8 h-8 sm:w-9 sm:h-9 md:flex-1 md:h-10 md:px-2.5 rounded-lg md:rounded-xl border flex items-center justify-center gap-1.5 text-xs font-bold transition-transform active:scale-95 shrink-0 ${
                     isDarkMode
                       ? 'bg-amber-900/50 border-amber-500/80 text-amber-200 hover:bg-amber-900/70'
                       : 'bg-[#F5E6C8] border-[#C99E5A] text-[#7A3E18] hover:bg-[#EDD9B2]'
@@ -2075,14 +2447,8 @@ export default function App() {
               }`}
             >
               {(() => {
-                const gapPx = 2;
-                const cellPx = Math.max(
-                  42,
-                  Math.floor(
-                    (boardBoxSize - gapPx * (currentPuzzle.size - 1)) /
-                      currentPuzzle.size
-                  )
-                );
+                const gapPx = boardGapPx;
+                const cellPx = boardCellPx;
 
                 return (
                   <div
@@ -2091,7 +2457,7 @@ export default function App() {
                       transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoomScale})`,
                       transformOrigin: 'center center',
                     }}
-                    className="transition-transform duration-75"
+                    className="transition-transform duration-200 ease-out"
                   >
                     <div
                       style={{
@@ -2145,7 +2511,7 @@ export default function App() {
                                   : isSelected
                                   ? isDarkMode
                                     ? 'bg-amber-900/80 border-amber-400 text-amber-50 ring-2 ring-amber-400 z-10'
-                                    : 'bg-[#FFF5D6] border-[#B85D3B] text-[#2C2520] ring-2 ring-[#B85D3B] z-10'
+                                    : 'bg-[#F8EDD4] border-[#5C4332] text-[#2C2520] ring-2 ring-[#5C4332] z-10'
                                   : isInActiveWord
                                   ? isDarkMode
                                     ? 'bg-stone-800 border-amber-500/80 text-stone-100'
@@ -2164,7 +2530,7 @@ export default function App() {
                                         : 'text-[#2E6F5E]'
                                       : isDarkMode
                                       ? 'text-amber-400'
-                                      : 'text-[#8C4A27]'
+                                      : 'text-[#5C4332]'
                                   }`}
                                 >
                                   {cell.clueNumber}
@@ -2186,7 +2552,9 @@ export default function App() {
             {/* [오른쪽 / 모바일 하단 우측] 필기 영역 (손글씨 또는 타이핑) */}
             <div
               data-testid="writing-panel"
-              className="col-span-1 col-start-2 row-start-2 md:col-start-3 md:row-start-1 h-full min-h-0 min-w-0 overflow-hidden"
+              className={`col-span-1 col-start-2 row-start-2 md:col-start-3 md:row-start-1 min-h-0 min-w-0 overflow-hidden ${
+                inputMode === 'handwriting' ? 'h-full' : 'h-full md:h-auto md:self-start'
+              }`}
             >
               {inputMode === 'handwriting' ? (
                 <HandwritingPad
@@ -2194,15 +2562,21 @@ export default function App() {
                   currentCellInput={
                     grid[selectedCell.row]?.[selectedCell.col]?.userInput || ''
                   }
+                  expectedChar={
+                    grid[selectedCell.row]?.[selectedCell.col]?.solution || ''
+                  }
                   isDarkMode={isDarkMode}
                   autoCommitDelaySec={autoCommitDelaySec}
                   contextSyllables={currentPuzzleSyllables}
+                  onOfflineDetected={() => triggerOfflineMode(true)}
                   onSelectCandidate={handleEnterCharacter}
                   onClearCell={handleClearCurrentCell}
                 />
               ) : (
                 <TypingPad
                   isDarkMode={isDarkMode}
+                  isOffline={isOffline}
+                  onAttemptSwitchToHandwriting={handleAttemptSwitchToHandwriting}
                   onEnterSingleChar={handleEnterCharacter}
                   onEnterFullWord={handleEnterFullWord}
                   onClearCell={handleClearCurrentCell}
@@ -2235,7 +2609,7 @@ export default function App() {
                 {activeHintModal === 'letter' ? (
                   <Lightbulb className="w-5 h-5 text-amber-500" />
                 ) : (
-                  <Sparkles className="w-5 h-5 text-[#B85D3B] dark:text-amber-400" />
+                  <Sparkles className="w-5 h-5 text-[#5C4332] dark:text-amber-400" />
                 )}
                 <h2 id="hint-modal-title">
                   {activeHintModal === 'letter' ? '한 글자 힌트' : '한 단어 힌트'}
@@ -2288,8 +2662,8 @@ export default function App() {
                 }
                 className={`min-h-[44px] rounded-xl font-bold text-sm flex items-center justify-center gap-1 ${
                   isDarkMode
-                    ? 'bg-amber-600 text-stone-950 hover:bg-amber-500'
-                    : 'bg-[#B85D3B] text-white hover:bg-[#9E4B2C]'
+                    ? 'bg-[#CE8E54] text-[#FFFDF9] hover:bg-[#BF8047]'
+                    : 'bg-[#CC8B52] text-[#FFFDF9] hover:bg-[#BC7C44]'
                 }`}
               >
                 <Coins className="w-4 h-4" />
@@ -2319,7 +2693,7 @@ export default function App() {
           >
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2 font-bold text-base">
-                <Plus className="w-5 h-5 text-[#B85D3B] dark:text-amber-400" />
+                <Plus className="w-5 h-5 text-[#5C4332] dark:text-amber-400" />
                 <h2 id="create-stage-modal-title">새 스테이지 생성</h2>
               </div>
 
@@ -2347,7 +2721,7 @@ export default function App() {
                 }`}
               >
                 <span className="text-xs font-bold opacity-80">스테이지 번호</span>
-                <span className="font-mono text-base font-extrabold text-[#B85D3B] dark:text-amber-400">
+                <span className="font-mono text-base font-extrabold text-[#5C4332] dark:text-amber-400">
                   {nextAutoStageNumber}단계
                 </span>
               </div>
@@ -2441,29 +2815,6 @@ export default function App() {
                   </button>
                 </div>
               </div>
-
-              {/* 생성될 격자 데이터 요약 */}
-              <div
-                className={`rounded-2xl border p-3 text-xs space-y-1.5 ${
-                  isDarkMode
-                    ? 'bg-stone-950/80 border-stone-800 text-stone-300'
-                    : 'bg-[#EFE9DA] border-[#D8CEBE] text-[#4A3F35]'
-                }`}
-              >
-                <div className="flex items-center justify-between font-bold">
-                  <span>격자 크기</span>
-                  <span className="font-mono">{createGridSize} × {createGridSize}</span>
-                </div>
-                <div className="flex items-center justify-between font-bold">
-                  <span>배치된 교차 단어 수</span>
-                  <span className="font-mono text-[#B85D3B] dark:text-amber-400">
-                    총 {previewWordDataList.length}개 (가로{' '}
-                    {previewWordDataList.filter((w) => w.direction === 'Horizontal').length}{' '}
-                    / 세로{' '}
-                    {previewWordDataList.filter((w) => w.direction === 'Vertical').length})
-                  </span>
-                </div>
-              </div>
             </div>
 
             <div className="grid grid-cols-2 gap-2">
@@ -2484,8 +2835,8 @@ export default function App() {
                 onClick={() => handleCreateAndRegisterStage(true)}
                 className={`min-h-[44px] rounded-xl font-bold text-sm flex items-center justify-center gap-1 ${
                   isDarkMode
-                    ? 'bg-amber-600 text-stone-950 hover:bg-amber-500'
-                    : 'bg-[#B85D3B] text-white hover:bg-[#9E4B2C]'
+                    ? 'bg-[#CE8E54] text-[#FFFDF9] hover:bg-[#BF8047]'
+                    : 'bg-[#CC8B52] text-[#FFFDF9] hover:bg-[#BC7C44]'
                 }`}
               >
                 <span>추가 후 시작</span>
@@ -2561,7 +2912,7 @@ export default function App() {
           >
             <div className="flex items-center justify-between mb-3 shrink-0">
               <div className="flex items-center gap-2 font-bold text-lg">
-                <CircleHelp className="w-5 h-5 text-[#B85D3B] dark:text-amber-400" />
+                <CircleHelp className="w-5 h-5 text-[#5C4332] dark:text-amber-400" />
                 <h2 id="how-to-play-modal-title">게임방법</h2>
               </div>
 
@@ -2587,7 +2938,7 @@ export default function App() {
                     : 'bg-[#FDFBF7] border-[#E2D9C8]'
                 }`}
               >
-                <div className="font-bold text-sm mb-1 text-[#B85D3B] dark:text-amber-400">
+                <div className="font-bold text-sm mb-1 text-[#5C4332] dark:text-amber-400">
                   1. 십자말풀이 규칙
                 </div>
                 <p className="opacity-90 break-keep">
@@ -2602,7 +2953,7 @@ export default function App() {
                     : 'bg-[#FDFBF7] border-[#E2D9C8]'
                 }`}
               >
-                <div className="font-bold text-sm mb-1 text-[#B85D3B] dark:text-amber-400">
+                <div className="font-bold text-sm mb-1 text-[#5C4332] dark:text-amber-400">
                   2. 손글씨 & 키보드 입력
                 </div>
                 <p className="opacity-90 break-keep">
@@ -2617,7 +2968,7 @@ export default function App() {
                     : 'bg-[#FDFBF7] border-[#E2D9C8]'
                 }`}
               >
-                <div className="font-bold text-sm mb-1 text-[#B85D3B] dark:text-amber-400">
+                <div className="font-bold text-sm mb-1 text-[#5C4332] dark:text-amber-400">
                   3. 힌트와 클리어 표시
                 </div>
                 <p className="opacity-90 break-keep">
@@ -2632,7 +2983,7 @@ export default function App() {
                     : 'bg-[#FDFBF7] border-[#E2D9C8]'
                 }`}
               >
-                <div className="font-bold text-sm mb-1 text-[#B85D3B] dark:text-amber-400">
+                <div className="font-bold text-sm mb-1 text-[#5C4332] dark:text-amber-400">
                   4. 나만의 스테이지 생성 & 선택 삭제
                 </div>
                 <p className="opacity-90 break-keep">
@@ -2646,8 +2997,8 @@ export default function App() {
               onClick={() => setIsHowToPlayOpen(false)}
               className={`mt-4 w-full min-h-[46px] rounded-2xl font-bold text-sm shrink-0 ${
                 isDarkMode
-                  ? 'bg-amber-600 text-stone-950 hover:bg-amber-500'
-                  : 'bg-[#B85D3B] text-white hover:bg-[#9E4B2C]'
+                  ? 'bg-[#CE8E54] text-[#FFFDF9] hover:bg-[#BF8047]'
+                  : 'bg-[#CC8B52] text-[#FFFDF9] hover:bg-[#BC7C44]'
               }`}
             >
               확인
@@ -2673,7 +3024,7 @@ export default function App() {
           }
         }}
         onReplay={() => startPuzzle(currentPuzzle, true)}
-        onGoStageSelect={() => setScreen('stage_select')}
+        onGoStageSelect={() => navigateToStageSelect()}
       />
 
       {/* 설정 모달 */}
@@ -2684,7 +3035,15 @@ export default function App() {
         bgmEnabled={bgmEnabled}
         sfxEnabled={sfxEnabled}
         isDarkMode={isDarkMode}
-        onChangeInputMode={(mode) => setInputMode(mode)}
+        isOffline={isOffline}
+        onAttemptOfflineHandwriting={handleAttemptSwitchToHandwriting}
+        onChangeInputMode={(mode) => {
+          if (mode === 'handwriting') {
+            handleAttemptSwitchToHandwriting();
+            return;
+          }
+          setInputMode(mode);
+        }}
         onChangeAutoCommitDelay={(sec) => {
           setAutoCommitDelaySec(sec);
           saveStateToStorage((prev) => ({
@@ -2700,6 +3059,82 @@ export default function App() {
         onToggleDarkMode={() => setIsDarkMode((d) => !d)}
         onClose={() => setIsSettingsOpen(false)}
       />
+
+      {/* =====================================================================
+          앱 내 전용 모바일 팝업 알림창: 오프라인 환경 손글씨 미지원 안내
+      ===================================================================== */}
+      {isOfflineNoticeOpen && (
+        <div
+          data-testid="offline-notice-modal"
+          className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs select-none"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="offline-notice-title"
+          onClick={() => setIsOfflineNoticeOpen(false)}
+        >
+          <div
+            className={`w-full max-w-[340px] rounded-3xl border-2 p-5 sm:p-6 shadow-2xl text-center transition-all transform animate-in fade-in zoom-in-95 duration-150 ${
+              isDarkMode
+                ? 'bg-[#211E1B] border-stone-700 text-[#F5F2EB]'
+                : 'bg-[#FAF5E8] border-[#D8CEBE] text-[#2C2520]'
+            }`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* 상단 펄스 아이콘 뱃지 */}
+            <div className="relative mx-auto w-14 h-14 mb-3.5 flex items-center justify-center">
+              <span className="absolute inset-0 rounded-2xl bg-rose-500/15 animate-ping opacity-60" />
+              <div className="relative w-14 h-14 rounded-2xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-rose-600 dark:text-rose-400 shadow-xs">
+                <WifiOff className="w-7 h-7 stroke-[2.2]" />
+              </div>
+            </div>
+
+            {/* 작은 안내 라벨 */}
+            <div className="inline-block px-2.5 py-0.5 rounded-full text-[11px] font-bold tracking-tight bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/25 mb-2">
+              네트워크 연결 끊김
+            </div>
+
+            <h3
+              id="offline-notice-title"
+              className="text-lg font-black tracking-tight mb-2 leading-snug"
+            >
+              오프라인 환경에서는<br />손글씨 모드를 지원하지 않습니다
+            </h3>
+
+            <p
+              className={`text-xs sm:text-sm leading-relaxed mb-5 px-1 font-medium ${
+                isDarkMode ? 'text-stone-300' : 'text-[#5C4E41]'
+              }`}
+            >
+              현재 오프라인 상태이므로 손글씨 인식을 사용할 수 없습니다.
+              <br />
+              <span className="font-bold text-amber-600 dark:text-amber-400">
+                키보드(타이핑) 입력 모드
+              </span>
+              로 자동 전환되었습니다.
+              <br />
+              <span className="text-[11px] opacity-75 mt-1 block">
+                인터넷에 다시 연결되면 손글씨 모드를 사용하실 수 있습니다.
+              </span>
+            </p>
+
+            <button
+              type="button"
+              data-testid="offline-notice-confirm-btn"
+              onClick={() => {
+                soundManager.playSnapFit();
+                setIsOfflineNoticeOpen(false);
+              }}
+              className={`w-full min-h-[48px] rounded-2xl font-extrabold text-sm sm:text-base flex items-center justify-center gap-2 transition-transform active:scale-95 shadow-md border ${
+                isDarkMode
+                  ? 'bg-[#CE8E54] border-[#E2A872] text-[#FFFDF9] hover:bg-[#BF8047]'
+                  : 'bg-[#CC8B52] border-[#B6763E] text-[#FFFDF9] hover:bg-[#BC7C44]'
+              }`}
+            >
+              <span>확인 (키보드로 계속하기)</span>
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,0 +1,10 @@
+{
+  "appId": "com.ongeul.crossword",
+  "appName": "손글씨 십자말풀이",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true
+  }
+}

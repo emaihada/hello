@@ -14,11 +14,81 @@ class SoundManager {
   private sfxEnabled: boolean = true;
   private bgmTimer: number | null = null;
   private isPlayingBgm: boolean = false;
+  private isBackgrounded: boolean = false;
+  private lifecycleBound: boolean = false;
   private noteIndex: number = 0;
   private lastPaperSoundAt: number = 0;
+  private cachedNoiseBuffer: AudioBuffer | null = null;
+
+  public constructor() {
+    this.bindLifecycleListeners();
+  }
+
+  private bindLifecycleListeners() {
+    if (this.lifecycleBound || typeof window === 'undefined') return;
+    this.lifecycleBound = true;
+
+    const handleBackground = () => {
+      this.pauseForBackground();
+    };
+
+    const handleForeground = () => {
+      if (typeof document !== 'undefined' && (document.hidden || document.visibilityState === 'hidden')) {
+        return;
+      }
+      this.resumeFromBackground();
+    };
+
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden || document.visibilityState === 'hidden') {
+          handleBackground();
+        } else {
+          handleForeground();
+        }
+      });
+      // Capacitor / Cordova Android native lifecycle events
+      document.addEventListener('pause', handleBackground, false);
+      document.addEventListener('resume', handleForeground, false);
+    }
+
+    window.addEventListener('blur', handleBackground);
+    window.addEventListener('focus', handleForeground);
+    window.addEventListener('pagehide', handleBackground);
+    window.addEventListener('beforeunload', handleBackground);
+  }
+
+  public pauseForBackground() {
+    this.isBackgrounded = true;
+    if (this.bgmTimer !== null && typeof window !== 'undefined') {
+      window.clearInterval(this.bgmTimer);
+      this.bgmTimer = null;
+    }
+    if (this.ctx && this.ctx.state === 'running') {
+      this.ctx.suspend().catch(() => {});
+    }
+  }
+
+  public resumeFromBackground() {
+    this.isBackgrounded = false;
+    if (this.isPlayingBgm && this.bgmEnabled) {
+      if (this.ctx && this.ctx.state === 'suspended') {
+        this.ctx.resume().catch(() => {});
+      }
+      this.startBgm();
+    }
+  }
 
   private ensureContext(): AudioContext | null {
     if (typeof window === 'undefined') return null;
+    if (
+      this.isBackgrounded ||
+      (typeof document !== 'undefined' &&
+        (document.hidden || document.visibilityState === 'hidden'))
+    ) {
+      return null;
+    }
+    this.bindLifecycleListeners();
     try {
       if (!this.ctx) {
         const AudioCtx =
@@ -27,6 +97,17 @@ class SoundManager {
         if (AudioCtx) {
           this.ctx = new AudioCtx();
         }
+      }
+      if (this.ctx && !this.cachedNoiseBuffer) {
+        const duration = 0.1;
+        const bufferSize = Math.floor(this.ctx.sampleRate * duration);
+        const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+          const env = Math.sin((i / bufferSize) * Math.PI);
+          data[i] = (Math.random() * 2 - 1) * env * 0.45;
+        }
+        this.cachedNoiseBuffer = buffer;
       }
       if (this.ctx && this.ctx.state === 'suspended') {
         this.ctx.resume().catch(() => {});
@@ -41,8 +122,11 @@ class SoundManager {
     this.bgmEnabled = bgm;
     this.sfxEnabled = sfx;
     if (!this.bgmEnabled) {
-      this.stopBgm();
-    } else if (this.isPlayingBgm && !this.bgmTimer) {
+      if (this.bgmTimer !== null && typeof window !== 'undefined') {
+        window.clearInterval(this.bgmTimer);
+        this.bgmTimer = null;
+      }
+    } else if (this.isPlayingBgm && !this.bgmTimer && !this.isBackgrounded) {
       this.startBgm();
     }
   }
@@ -52,7 +136,13 @@ class SoundManager {
    */
   public startBgm() {
     this.isPlayingBgm = true;
-    if (!this.bgmEnabled) return;
+    if (!this.bgmEnabled || this.isBackgrounded) return;
+    if (
+      typeof document !== 'undefined' &&
+      (document.hidden || document.visibilityState === 'hidden')
+    ) {
+      return;
+    }
     if (this.bgmTimer !== null) return;
 
     // Warm C-major / F-major pentatonic melody notes (Hz)
@@ -76,7 +166,16 @@ class SoundManager {
     ];
 
     const playNextBgmNote = () => {
-      if (!this.bgmEnabled || !this.isPlayingBgm) return;
+      if (
+        !this.bgmEnabled ||
+        !this.isPlayingBgm ||
+        this.isBackgrounded ||
+        (typeof document !== 'undefined' &&
+          (document.hidden || document.visibilityState === 'hidden'))
+      ) {
+        this.pauseForBackground();
+        return;
+      }
       const ctx = this.ensureContext();
       if (ctx && ctx.state === 'running') {
         const now = ctx.currentTime;
@@ -105,7 +204,7 @@ class SoundManager {
 
   public stopBgm() {
     this.isPlayingBgm = false;
-    if (this.bgmTimer !== null) {
+    if (this.bgmTimer !== null && typeof window !== 'undefined') {
       window.clearInterval(this.bgmTimer);
       this.bgmTimer = null;
     }
@@ -121,21 +220,11 @@ class SoundManager {
     this.lastPaperSoundAt = nowMs;
 
     const ctx = this.ensureContext();
-    if (!ctx) return;
+    if (!ctx || !this.cachedNoiseBuffer) return;
 
     const duration = 0.065;
-    const bufferSize = Math.floor(ctx.sampleRate * duration);
-    const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-    const data = buffer.getChannelData(0);
-
-    for (let i = 0; i < bufferSize; i++) {
-      // Envelope shaped noise like graphite/ink nib rubbing on Hanji paper
-      const env = Math.sin((i / bufferSize) * Math.PI);
-      data[i] = (Math.random() * 2 - 1) * env * 0.45;
-    }
-
     const noise = ctx.createBufferSource();
-    noise.buffer = buffer;
+    noise.buffer = this.cachedNoiseBuffer;
 
     const bandpass = ctx.createBiquadFilter();
     bandpass.type = 'bandpass';
@@ -248,6 +337,10 @@ class SoundManager {
     gain.connect(ctx.destination);
     osc.start(now);
     osc.stop(now + 0.25);
+  }
+
+  public playWrongAlert() {
+    this.playWrongBuzzer();
   }
 
   /**

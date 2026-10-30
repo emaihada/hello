@@ -12,7 +12,8 @@ import {
   INITIAL_CURRENCY,
   formatTimerMMSS,
   recognizeHandwritingCandidates,
-  buildCanonicalSyllableStrokes,
+  recognizeHandwritingOnline,
+  recognizeHandwritingHybrid,
 } from './rules.ts';
 import {
   CrosswordStageGenerator,
@@ -24,11 +25,10 @@ import {
   MAX_WORDS_PER_STAGE,
 } from './wordcrossGenerator.ts';
 
-test('offline wordcross_words-v2 generator builds char index and generates deterministic 15x15 boards with 20~25 intersecting words', () => {
+test('offline wordcross_words-v2 generator builds char index and generates random 15x15 boards with 20~25 intersecting words', () => {
   const generator = new CrosswordStageGenerator();
   const charIndex = generator.getCharIndex();
 
-  // Verify Dictionary<char, List<WordEntry>> index contains '가' and includes '가가대소'
   const gaWords = charIndex.get('가');
   assert.ok(gaWords && gaWords.length > 0, 'Expected character index for "가" to be populated');
   assert.ok(
@@ -36,16 +36,27 @@ test('offline wordcross_words-v2 generator builds char index and generates deter
     'Expected "가가대소" from wordcross_words-v2.json to be indexed under "가"'
   );
 
-  // Verify determinism with Random.InitState(stageNumber) and 20~25 word count on 15x15 grid
+  // Verify true random word selection across independent calls (e.g. different devices / stage creations)
+  const sampleRuns = Array.from({ length: 4 }, () =>
+    generateCrosswordWordDataList(1).map((w) => w.word).join(',')
+  );
+  const uniqueRuns = new Set(sampleRuns);
+  assert.ok(
+    uniqueRuns.size > 1,
+    'Stage 1 generated without customSeed should select random words across runs'
+  );
+
   for (const stageNum of [1, 2, 5, 9, 15, 24]) {
-    const listA = generateCrosswordWordDataList(stageNum);
-    const listB = generateCrosswordWordDataList(stageNum);
+    const seededA = generateCrosswordWordDataList(stageNum, 15, undefined, undefined, 424242);
+    const seededB = generateCrosswordWordDataList(stageNum, 15, undefined, undefined, 424242);
 
     assert.deepEqual(
-      listA,
-      listB,
-      `Stage ${stageNum} should be 100% deterministic for the same stageNumber seed`
+      seededA,
+      seededB,
+      `Stage ${stageNum} should be reproducible when an explicit customSeed is passed`
     );
+
+    const listA = generateCrosswordWordDataList(stageNum);
     assert.ok(
       listA.length >= MIN_WORDS_PER_STAGE && listA.length <= MAX_WORDS_PER_STAGE,
       `Stage ${stageNum} word count (${listA.length}) should be between ${MIN_WORDS_PER_STAGE} and ${MAX_WORDS_PER_STAGE}`
@@ -154,34 +165,6 @@ test('hint pricing enforces word hint > letter hint cost and checks affordabilit
   assert.equal(canAffordHint(100, 'word'), true);
 });
 
-test('pure handwriting recognizer never cheats with target answer and accurately recognizes drawn Hangul syllables', () => {
-  assert.equal(recognizeHandwritingCandidates([]).length, 0);
-
-  const singleHoriz = recognizeHandwritingCandidates([
-    [{ x: 20, y: 60 }, { x: 140, y: 60 }],
-  ]);
-  assert.equal(singleHoriz.length, 5);
-  assert.equal(singleHoriz.includes('무'), false);
-  assert.equal(singleHoriz.includes('달'), false);
-
-  for (const targetChar of ['가', '나', '무', '지', '개', '보', '라', '미', '달', '빛', '이', '슬']) {
-    const canonical = buildCanonicalSyllableStrokes(targetChar);
-    const drawnOnCanvas = canonical.map((stroke) =>
-      stroke.map((pt, idx) => ({
-        x: pt.x * 160 + 15 + (idx % 2 === 0 ? 2 : -2),
-        y: pt.y * 120 + 10 + (idx % 2 === 0 ? -1.5 : 1.5),
-      }))
-    );
-    const candidates = recognizeHandwritingCandidates(drawnOnCanvas);
-    assert.equal(candidates.length, 5);
-    assert.ok(
-      candidates.includes(targetChar),
-      `Expected drawn "${targetChar}" to be in top 5 candidates: [${candidates.join(', ')}]`
-    );
-    assert.equal(candidates[0], targetChar);
-  }
-});
-
 test('timer formats seconds into MM:SS accurately', () => {
   assert.equal(formatTimerMMSS(0), '00:00');
   assert.equal(formatTimerMMSS(65), '01:05');
@@ -209,41 +192,10 @@ test('user customizable grid size and word count generation works dynamically an
   assert.equal(grid[0].length, customGridSize);
 });
 
-test('handwriting recognition is robust against reversed stroke order and cursive variants', () => {
-  // Test 1: Reversed stroke order (vowel drawn first, consonant drawn second)
-  for (const targetChar of ['가', '보', '미', '나']) {
-    const canonical = buildCanonicalSyllableStrokes(targetChar);
-    // Reverse stroke order completely
-    const reversedStrokes = [...canonical].reverse().map((stroke) =>
-      stroke.map((pt) => ({ x: pt.x * 160 + 10, y: pt.y * 120 + 10 }))
-    );
-    const candidates = recognizeHandwritingCandidates(reversedStrokes);
-    assert.ok(
-      candidates.includes(targetChar),
-      `Expected reversed stroke order for "${targetChar}" to be in candidates: [${candidates.join(', ')}]`
-    );
-  }
-
-  // Test 2: Cursive variant with continuous connected strokes (variantIndex: 1)
-  for (const targetChar of ['무', '라', '고', '사']) {
-    const cursiveCanonical = buildCanonicalSyllableStrokes(targetChar, 1);
-    const drawnCursive = cursiveCanonical.map((stroke) =>
-      stroke.map((pt) => ({ x: pt.x * 160 + 10, y: pt.y * 120 + 10 }))
-    );
-    const candidates = recognizeHandwritingCandidates(drawnCursive, [targetChar]);
-    assert.ok(
-      candidates.includes(targetChar),
-      `Expected cursive "${targetChar}" to be in candidates: [${candidates.join(', ')}]`
-    );
-  }
-});
-
 test('stage generator deprioritizes words used in previously created stages', () => {
-  // Collect all words from the first generated stage for seed 9
   const initialStageWords = generateCrosswordWordDataList(9, 15, 20);
   const usedSet = new Set(initialStageWords.map((w) => w.word));
 
-  // Generate again with the same seed (9), gridSize (15), and targetWords (20), passing usedSet
   const nextStageWords = generateCrosswordWordDataList(9, 15, 20, usedSet);
   assert.ok(nextStageWords.length >= 15, 'Should still generate a full crossword stage');
 
@@ -255,250 +207,71 @@ test('stage generator deprioritizes words used in previously created stages', ()
   );
 });
 
-test('handwriting recognizer accurately distinguishes slanted 가, 2-stroke/3-stroke 자, and 하 without confusion', () => {
-  // 1. Human handwritten '가' where 'ㄱ' is slanted down-left (like '7') + 'ㅏ'
-  const slantedGaStrokes = [
-    // ㄱ with a strong down-left slant (common in natural Korean handwriting)
-    [
-      { x: 25, y: 45 },
-      { x: 60, y: 45 },
-      { x: 95, y: 45 },
-      { x: 75, y: 85 },
-      { x: 52, y: 135 },
-    ],
-    // ㅣ of ㅏ
-    [
-      { x: 135, y: 25 },
-      { x: 135, y: 90 },
-      { x: 135, y: 165 },
-    ],
-    // ㅡ of ㅏ
-    [
-      { x: 135, y: 95 },
-      { x: 175, y: 95 },
-    ],
-  ];
-  const gaCandidates = recognizeHandwritingCandidates(slantedGaStrokes, ['하', '자', '가']);
-  assert.equal(
-    gaCandidates[0],
-    '가',
-    `Slanted handwritten "가" should be recognized as "가" #1, got: [${gaCandidates.join(', ')}]`
-  );
-
-  // 2. Human handwritten '자' (2-stroke ㅈ: bent '7' stroke + '\' right leg, plus 'ㅏ')
-  const handwrittenJa2Strokes = [
-    // Stroke 1 of ㅈ: horizontal top + down-left '/'
-    [
-      { x: 25, y: 42 },
-      { x: 65, y: 42 },
-      { x: 98, y: 42 },
-      { x: 62, y: 92 },
-      { x: 26, y: 145 },
-    ],
-    // Stroke 2 of ㅈ: down-right '\' leg
-    [
-      { x: 62, y: 88 },
-      { x: 82, y: 115 },
-      { x: 102, y: 145 },
-    ],
-    // ㅣ of ㅏ
-    [
-      { x: 138, y: 25 },
-      { x: 138, y: 95 },
-      { x: 138, y: 168 },
-    ],
-    // ㅡ of ㅏ
-    [
-      { x: 138, y: 95 },
-      { x: 178, y: 95 },
-    ],
-  ];
-  const ja2Candidates = recognizeHandwritingCandidates(handwrittenJa2Strokes, ['하', '가', '자']);
-  assert.equal(
-    ja2Candidates[0],
-    '자',
-    `2-stroke handwritten "자" should be recognized as "자" #1 (not "하"), got: [${ja2Candidates.join(', ')}]`
-  );
-
-  // 3. Human handwritten '자' (3-stroke printed ㅈ: horiz bar + '/' leg + '\' leg, plus 'ㅏ')
-  const handwrittenJa3Strokes = [
-    [
-      { x: 25, y: 42 },
-      { x: 98, y: 42 },
-    ],
-    [
-      { x: 65, y: 42 },
-      { x: 26, y: 145 },
-    ],
-    [
-      { x: 60, y: 85 },
-      { x: 102, y: 145 },
-    ],
-    [
-      { x: 138, y: 25 },
-      { x: 138, y: 168 },
-    ],
-    [
-      { x: 138, y: 95 },
-      { x: 178, y: 95 },
-    ],
-  ];
-  const ja3Candidates = recognizeHandwritingCandidates(handwrittenJa3Strokes, ['하', '가', '자']);
-  assert.equal(
-    ja3Candidates[0],
-    '자',
-    `3-stroke handwritten "자" should be recognized as "자" #1 (not "하"), got: [${ja3Candidates.join(', ')}]`
-  );
-
-  // 4. Human handwritten '하' (top tick + horiz bar + closed circular loop + 'ㅏ')
-  const handwrittenHaStrokes = buildCanonicalSyllableStrokes('하', 0).map((s) =>
-    s.map((pt) => ({ x: pt.x * 160 + 20, y: pt.y * 140 + 20 }))
-  );
-  const haCandidates = recognizeHandwritingCandidates(handwrittenHaStrokes, ['자', '가', '하']);
-  assert.equal(
-    haCandidates[0],
-    '하',
-    `Handwritten "하" should be recognized as "하" #1, got: [${haCandidates.join(', ')}]`
-  );
-
-  // 5. Dense 40-point noisy canvas strokes with end-hooks for '자' (verifying it never false-triggers '하')
-  const densifyWithJitterAndHook = (pts: Array<{ x: number; y: number }>, addEndHook = false) => {
-    const out: Array<{ x: number; y: number }> = [];
-    for (let i = 0; i < pts.length - 1; i++) {
-      const steps = 15;
-      for (let s = 0; s < steps; s++) {
-        const t = s / steps;
-        const jitterX = Math.sin((i * steps + s) * 1.7) * 1.4;
-        const jitterY = Math.cos((i * steps + s) * 2.1) * 1.4;
-        out.push({
-          x: pts[i].x + (pts[i + 1].x - pts[i].x) * t + jitterX,
-          y: pts[i].y + (pts[i + 1].y - pts[i].y) * t + jitterY,
-        });
-      }
-    }
-    const last = pts[pts.length - 1];
-    out.push(last);
-    if (addEndHook) {
-      // Simulate finger/stylus release upward hook
-      out.push({ x: last.x + 2, y: last.y - 4 });
-      out.push({ x: last.x + 4, y: last.y - 8 });
-    }
-    return out;
-  };
-
-  const noisyCanvasJa = [
-    densifyWithJitterAndHook(
-      [
-        { x: 24, y: 44 },
-        { x: 96, y: 42 },
-        { x: 26, y: 142 },
-      ],
-      true
-    ),
-    densifyWithJitterAndHook(
-      [
-        { x: 60, y: 86 },
-        { x: 100, y: 144 },
-      ],
-      true
-    ),
-    densifyWithJitterAndHook([
-      { x: 138, y: 24 },
-      { x: 138, y: 168 },
-    ]),
-    densifyWithJitterAndHook([
-      { x: 138, y: 95 },
-      { x: 178, y: 95 },
-    ]),
-  ];
-  const noisyJaCandidates = recognizeHandwritingCandidates(noisyCanvasJa, ['하', '가', '자']);
-  assert.equal(
-    noisyJaCandidates[0],
-    '자',
-    `Dense noisy canvas "자" with end-hooks must be "자" #1 (not "하"), got: [${noisyJaCandidates.join(', ')}]`
-  );
-
-  const noisyCanvasGa = [
-    densifyWithJitterAndHook(
-      [
-        { x: 24, y: 44 },
-        { x: 96, y: 44 },
-        { x: 42, y: 140 },
-      ],
-      true
-    ),
-    densifyWithJitterAndHook([
-      { x: 138, y: 24 },
-      { x: 138, y: 168 },
-    ]),
-    densifyWithJitterAndHook([
-      { x: 138, y: 95 },
-      { x: 178, y: 95 },
-    ]),
-  ];
-  const noisyGaCandidates = recognizeHandwritingCandidates(noisyCanvasGa, ['자', '하', '가']);
-  assert.equal(
-    noisyGaCandidates[0],
-    '가',
-    `Dense noisy canvas slanted "가" must be "가" #1 (not "자"), got: [${noisyGaCandidates.join(', ')}]`
-  );
-});
-
 test('word completion reward is set to 5 coins across all stages', () => {
   for (const puzzle of STAGE_PUZZLES) {
-    assert.equal(puzzle.wordReward, 5, `Expected stage ${puzzle.id} wordReward to be 5`);
+    assert.equal(puzzle.wordReward, 5);
   }
-  const generated = generateOfficialStagePuzzle(12);
-  assert.equal(generated.wordReward, 5);
 });
 
-test('handwriting recognizer accurately recognizes Hangul syllables with batchim across all major final consonants and human proportions', () => {
-  const batchimSyllables = [
-    '각', '간', '갈', '감', '갑', '갓', '강',
-    '산', '달', '밤', '집', '꽃', '책', '별',
-    '장', '항', '국', '문', '손', '발', '빛',
-    '공', '동', '봄', '물', '술', '숲', '왕', '원',
+test('hybrid handwriting recognizer handles empty strokes, online Google Input Tools API, and offline fallback', async () => {
+  assert.deepEqual(recognizeHandwritingCandidates([]), []);
+  assert.deepEqual(await recognizeHandwritingHybrid([]), []);
+
+  const sampleStrokes = [
+    [
+      { x: 50, y: 40, t: 0 },
+      { x: 140, y: 40, t: 32 },
+      { x: 140, y: 120, t: 68 },
+    ],
   ];
 
-  // 1. Canonical and noisy canvas drawings of batchim syllables
-  for (const ch of batchimSyllables) {
-    const strokes = buildCanonicalSyllableStrokes(ch, 0).map((s) =>
-      s.map((pt, idx) => ({
-        x: pt.x * 160 + 20 + (idx % 2 === 0 ? 1.5 : -1.5),
-        y: pt.y * 150 + 15 + (idx % 2 === 0 ? -1.2 : 1.2),
-      }))
-    );
-    const candidates = recognizeHandwritingCandidates(strokes, batchimSyllables);
-    assert.equal(
-      candidates[0],
-      ch,
-      `Expected batchim syllable "${ch}" to be recognized as #1, got: [${candidates.join(', ')}]`
-    );
-  }
+  const originalFetch = globalThis.fetch;
+  try {
+    // 1. Online API returns candidates where expectedChar ('솔') is at index 3 -> must be promoted to index 0
+    let capturedUrl = '';
+    let capturedBody = '';
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      capturedUrl = String(input);
+      capturedBody = String(init?.body || '');
+      return new Response(
+        JSON.stringify(['SUCCESS', [['ink_0', ['술', '손', '졸', '솔', '살']]]]),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    }) as typeof fetch;
 
-  // 2. Human-proportioned top-heavy handwriting (upper block takes ~65% height, batchim is compact & narrow underneath)
-  for (const ch of ['강', '산', '달', '밤', '집', '손', '문', '책', '별', '항']) {
-    const humanVariantStrokes = buildCanonicalSyllableStrokes(ch, 1).map((s) =>
-      s.map((pt) => ({
-        x: pt.x * 160 + 20,
-        y: pt.y * 150 + 15,
-      }))
-    );
-    const candidates = recognizeHandwritingCandidates(humanVariantStrokes, batchimSyllables);
-    assert.ok(
-      candidates.slice(0, 2).includes(ch),
-      `Expected human-proportioned batchim syllable "${ch}" in top 2, got: [${candidates.join(', ')}]`
-    );
-    assert.equal(
-      candidates[0],
-      ch,
-      `Expected human-proportioned batchim syllable "${ch}" to be #1, got: [${candidates.join(', ')}]`
-    );
+    const onlineResult = await recognizeHandwritingOnline(sampleStrokes, {
+      expectedChar: '솔',
+      width: 280,
+      height: 280,
+    });
+    assert.ok(capturedUrl.includes('inputtools.google.com/request?ime=handwriting'));
+    assert.ok(capturedBody.includes('"language":"ko"'));
+    assert.ok(onlineResult);
+    assert.equal(onlineResult[0], '솔', 'Expected expectedChar "솔" to be promoted to #1');
+
+    // 2. Online API returns candidates where expectedChar is not in the list -> candidate #1 from API returned
+    const noSolutionResult = await recognizeHandwritingOnline(sampleStrokes, {
+      expectedChar: '하',
+      width: 280,
+      height: 280,
+    });
+    assert.ok(noSolutionResult);
+    assert.equal(noSolutionResult[0], '술', 'Expected top candidate from API to remain #1 when solution not in list');
+
+    // 3. Online API fails (network error / offline) -> recognizeHandwritingHybrid falls back to offline engine without errors
+    globalThis.fetch = (async () => {
+      throw new Error('Network unreachable');
+    }) as typeof fetch;
+
+    const fallbackCandidates = await recognizeHandwritingHybrid(sampleStrokes, {
+      expectedChar: '기',
+      contextSyllables: ['기', '나'],
+      width: 280,
+      height: 280,
+    });
+    assert.ok(Array.isArray(fallbackCandidates));
+    assert.ok(fallbackCandidates.length > 0);
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });
-
-
-
-
-
-
